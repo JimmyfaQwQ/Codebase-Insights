@@ -2,6 +2,7 @@ import logging
 import os
 import shutil
 import sys
+import time
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -55,8 +56,11 @@ def main():
         print(f"Error: Provided path '{project_root}' does not exist or is not a directory.")
         sys.exit(1)
 
+    _bm_t0 = time.perf_counter()
+
     print(f"Detecting languages in project at: {project_root}...\n")
     detected_languages = language_analysis.detect_languages(project_root)
+    _bm_t_lang = time.perf_counter()
     if detected_languages:
         print("Detected languages:")
         for language in detected_languages:
@@ -83,15 +87,24 @@ def main():
         sys.exit(1)
             
     
+    _bm_lsp_timings: dict[str, dict[str, float]] = {}
     for language in detected_languages:
         server_cmd = language_servers[language]
         client = LSP.LSPClient(language, server_cmd)
+        _bm_lsp_s = time.perf_counter()
         client.start_server()
+        _bm_lsp_started = time.perf_counter()
         client.initialize(project_root)
+        _bm_lsp_inited = time.perf_counter()
+        _bm_lsp_timings[language.value] = {
+            "start_server": _bm_lsp_started - _bm_lsp_s,
+            "initialize": _bm_lsp_inited - _bm_lsp_started,
+        }
         lsp_clients[language] = client
         print(f"Initialized LSP client for {language.value} with command: {' '.join(server_cmd)}\n")
 
     # --- Semantic indexer (AI summaries + vector search) ---
+    _bm_t_lsp_done = time.perf_counter()
     sem_indexer = None
     try:
         cfg = semantic_config.load_config(project_root, force_new=args.new_config)
@@ -103,8 +116,11 @@ def main():
     except Exception as e:
         print(f"[Semantic] Could not initialise semantic indexer: {e}")
         print("[Semantic] Continuing without AI-powered search.\n")
+    _bm_t_sem_init = time.perf_counter()
 
+    _bm_t_wi_s = time.perf_counter()
     indexer = workspace_indexer.WorkspaceIndexer(project_root, lsp_clients, semantic_indexer=sem_indexer)
+    _bm_t_wi_created = time.perf_counter()
 
     if args.rebuild_index:
         indexer.clear_index()
@@ -117,6 +133,17 @@ def main():
         sem_indexer.clear_project_summaries()
 
     indexer.start()
+    _bm_t_started = time.perf_counter()
+
+    # ── Benchmark: startup phase summary ────────────────────────────────
+    print(f"[BENCHMARK:STARTUP] lang_detect={_bm_t_lang - _bm_t0:.3f}s "
+          f"semantic_init={_bm_t_sem_init - _bm_t_lsp_done:.3f}s "
+          f"indexer_create={_bm_t_wi_created - _bm_t_wi_s:.3f}s "
+          f"total_pre_server={_bm_t_started - _bm_t0:.3f}s", flush=True)
+    for _bm_lang, _bm_lt in _bm_lsp_timings.items():
+        print(f"[BENCHMARK:STARTUP] lsp_{_bm_lang}_start_server={_bm_lt['start_server']:.3f}s "
+              f"lsp_{_bm_lang}_initialize={_bm_lt['initialize']:.3f}s", flush=True)
+    # ────────────────────────────────────────────────────────────────────
 
     try:
         mcp_server.run_server(lsp_clients, project_root, semantic_indexer=sem_indexer)

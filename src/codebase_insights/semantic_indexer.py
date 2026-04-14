@@ -202,6 +202,14 @@ class SemanticIndexer:
             persist_directory=self._chroma_dir,
         )
 
+        # Benchmark accumulators — reset before each _do_index() run
+        self._bm_t_context: float = 0.0
+        self._bm_t_llm: float = 0.0
+        self._bm_t_chroma: float = 0.0
+        self._bm_t_sqlite: float = 0.0
+        self._bm_input_tokens: int = 0
+        self._bm_output_tokens: int = 0
+
     # ------------------------------------------------------------------
     # Schema
     # ------------------------------------------------------------------
@@ -355,6 +363,24 @@ class SemanticIndexer:
                 self._index_project_summary()
             except Exception as e:
                 print(f"[Semantic] Error during indexing: {e}")
+            # ── DB size snapshot ────────────────────────────────────────────
+            try:
+                import pathlib
+                _db_size = os.path.getsize(self._db_path) if os.path.exists(self._db_path) else 0
+                _chroma_path = pathlib.Path(self._chroma_dir)
+                _chroma_size = (
+                    sum(f.stat().st_size for f in _chroma_path.rglob("*") if f.is_file())
+                    if _chroma_path.is_dir() else 0
+                )
+                print(
+                    f"[BENCHMARK:SIZES] sqlite_bytes={_db_size} "
+                    f"chroma_bytes={_chroma_size} "
+                    f"sqlite_mb={_db_size / 1048576:.2f} "
+                    f"chroma_mb={_chroma_size / 1048576:.2f}",
+                    flush=True,
+                )
+            except Exception:
+                pass
 
     def remove_file(self, file_path: str):
         """Remove all semantic data for symbols in the given file."""
@@ -656,6 +682,15 @@ class SemanticIndexer:
 
     def _do_index(self, symbol_ids: list[int] | None) -> list[str]:
         """Run symbol summary generation. Returns list of affected file_paths."""
+        # Reset per-run benchmark accumulators
+        self._bm_t_context = 0.0
+        self._bm_t_llm = 0.0
+        self._bm_t_chroma = 0.0
+        self._bm_t_sqlite = 0.0
+        self._bm_input_tokens = 0
+        self._bm_output_tokens = 0
+
+        _bm_t_do_start = time.perf_counter()
         con = sqlite3.connect(self._db_path, check_same_thread=False)
         con.execute("PRAGMA foreign_keys=ON")
         con.row_factory = sqlite3.Row
@@ -663,7 +698,9 @@ class SemanticIndexer:
         affected_files: set[str] = set()
 
         try:
+            _bm_t_pending_s = time.perf_counter()
             pending = self._find_pending_symbols(con, symbol_ids)
+            _bm_t_pending_e = time.perf_counter()
             if not pending:
                 return []
 
@@ -692,10 +729,22 @@ class SemanticIndexer:
                     for sym in batch:
                         affected_files.add(sym["file_path"])
 
+            _bm_t_do_end = time.perf_counter()
             if errors:
                 print(f"[Semantic] Done. Summarised: {processed}, Skipped (up-to-date): {skipped}, Errors: {errors}")
             else:
                 print(f"[Semantic] Done. Summarised: {processed}, Skipped (up-to-date): {skipped}")
+            print(
+                f"[BENCHMARK:SEMANTIC] wall_time={_bm_t_do_end - _bm_t_do_start:.2f}s "
+                f"pending_query={_bm_t_pending_e - _bm_t_pending_s:.3f}s "
+                f"context_extract={self._bm_t_context:.2f}s "
+                f"llm_batch={self._bm_t_llm:.2f}s "
+                f"chroma_insert={self._bm_t_chroma:.2f}s "
+                f"sqlite_write={self._bm_t_sqlite:.2f}s "
+                f"symbols_total={len(pending)} summarised={processed} skipped={skipped} errors={errors} "
+                f"input_tokens={self._bm_input_tokens} output_tokens={self._bm_output_tokens}",
+                flush=True,
+            )
             return list(affected_files)
         finally:
             con.close()
@@ -704,7 +753,7 @@ class SemanticIndexer:
         """Generate or update file-level summaries for the given files."""
         if not file_paths:
             return
-        import time
+        _bm_fs_start = time.perf_counter()
         try:
             con = sqlite3.connect(self._db_path, check_same_thread=False)
             con.execute("PRAGMA foreign_keys=ON")
@@ -809,12 +858,17 @@ class SemanticIndexer:
                     print(f"[Semantic] Failed to save file summary for {norm}: {e}")
             con.commit()
             print(f"[Semantic] File summaries updated.")
+            print(
+                f"[BENCHMARK:FILE_SUMMARIES] wall_time={time.perf_counter() - _bm_fs_start:.2f}s "
+                f"files_pending={len(pending_files)}",
+                flush=True,
+            )
         finally:
             con.close()
 
     def _index_project_summary(self) -> None:
         """Regenerate the project-level summary if any file summary has changed."""
-        import time
+        _bm_ps_start = time.perf_counter()
         try:
             con = sqlite3.connect(self._db_path, check_same_thread=False)
             con.execute("PRAGMA foreign_keys=ON")
@@ -865,6 +919,7 @@ class SemanticIndexer:
             )
             con.commit()
             print("[Semantic] Project summary updated.")
+            print(f"[BENCHMARK:PROJECT_SUMMARY] wall_time={time.perf_counter() - _bm_ps_start:.2f}s", flush=True)
         finally:
             con.close()
 
@@ -948,6 +1003,7 @@ class SemanticIndexer:
           3. Batched ChromaDB insert – summaries are written in a single add_texts() call.
         """
         # ── 1. Remove stale entries & build message list ────────────────────
+        _bm_ctx_s = time.perf_counter()
         file_cache: dict[str, list[str]] = {}   # path -> lines
         messages_list = []
         valid_syms: list[dict] = []
@@ -967,6 +1023,7 @@ class SemanticIndexer:
             except Exception as e:
                 print(f"[Semantic] Pre-process failed for {sym['name']}: {e}")
                 pre_errors += 1
+        self._bm_t_context += time.perf_counter() - _bm_ctx_s
 
         if not valid_syms:
             # All symbols were either hash-matched (up-to-date) or pre-process failed.
@@ -974,6 +1031,7 @@ class SemanticIndexer:
             return 0, pre_errors
 
         # ── 2. Parallel LLM summarisation ───────────────────────────────────
+        _bm_llm_s = time.perf_counter()
         try:
             responses = self._llm.batch(
                 messages_list,
@@ -982,6 +1040,12 @@ class SemanticIndexer:
         except Exception as e:
             print(f"[Semantic] LLM batch call failed: {e}")
             return 0, len(valid_syms)
+        self._bm_t_llm += time.perf_counter() - _bm_llm_s
+        # Collect token usage from response metadata if available
+        for _r in responses:
+            _meta = getattr(_r, 'usage_metadata', None) or {}
+            self._bm_input_tokens += _meta.get('input_tokens', 0)
+            self._bm_output_tokens += _meta.get('output_tokens', 0)
 
         # ── 3. Batched ChromaDB insert ───────────────────────────────────────
         texts: list[str] = []
@@ -1016,15 +1080,19 @@ class SemanticIndexer:
 
         if texts:
             try:
+                _bm_chroma_s = time.perf_counter()
                 self._vectorstore.add_texts(texts=texts, metadatas=metadatas, ids=chroma_ids)
+                self._bm_t_chroma += time.perf_counter() - _bm_chroma_s
             except Exception as e:
                 print(f"[Semantic] ChromaDB batch insert failed: {e}")
                 return 0, len(valid_syms)
 
         # ── 4. Persist to SQLite ─────────────────────────────────────────────
+        _bm_sqlite_s = time.perf_counter()
         for sym, summary, chroma_id in ok_syms:
             self._save_summary(con, sym["id"], sym["_symbol_hash"], summary, chroma_id)
         con.commit()
+        self._bm_t_sqlite += time.perf_counter() - _bm_sqlite_s
 
         return len(ok_syms), errors + (len(symbols) - len(valid_syms))
 

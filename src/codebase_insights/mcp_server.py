@@ -35,6 +35,28 @@ def _require_clients() -> dict[Language, LSP.LSPClient]:
     return _clients
 
 
+def _to_file_uri(file_uri: str) -> str:
+    """Normalise a caller-supplied file identifier to a ``file:///`` URI.
+
+    Accepts:
+    - Already-correct URIs: ``file:///G:/foo/bar.ts`` → unchanged
+    - URIs with wrong case/encoding: cleaned up
+    - Bare Windows absolute paths: ``G:\\foo\\bar.ts`` or ``G:/foo/bar.ts``
+      → ``file:///G:/foo/bar.ts``
+    - Bare POSIX absolute paths: ``/home/user/foo.py`` → ``file:///home/user/foo.py``
+    """
+    import urllib.parse
+    s = file_uri.strip()
+    if s.lower().startswith("file:"):
+        # Already a URI — return as-is (LSP server normalises case internally)
+        return s
+    # Bare filesystem path — convert to file URI.
+    # urllib.request.pathname2url handles Windows drive letters correctly.
+    from urllib.request import pathname2url
+    # pathname2url on Windows returns /G:/foo/bar — prepend file://
+    return "file://" + pathname2url(s)
+
+
 def _get_client(file_uri: str) -> tuple[LSP.LSPClient | None, dict | None]:
     """Detect language and return the matching LSP client, or an error dict."""
     language = detect_language(file_uri)
@@ -101,10 +123,11 @@ def lsp_hover(file_uri: str, line: int, character: int) -> dict:
     """Get hover information (docs / type) at a position in a file.
 
     Args:
-        file_uri: File URI, e.g. "file:///E:/my-project/src/main.py".
+        file_uri: File URI or bare filesystem path, e.g. "file:///E:/my-project/src/main.py" or "E:\\my-project\\src\\main.py".
         line: Zero-based line number.
         character: Zero-based character offset on the line.
     """
+    file_uri = _to_file_uri(file_uri)
     client, err = _get_client(file_uri)
     if err:
         return err
@@ -119,10 +142,11 @@ def lsp_definition(file_uri: str, line: int, character: int) -> dict:
     """Go to the definition of the symbol at the given position.
 
     Args:
-        file_uri: File URI, e.g. "file:///E:/my-project/src/main.py".
+        file_uri: File URI or bare filesystem path, e.g. "file:///E:/my-project/src/main.py" or "E:\\my-project\\src\\main.py".
         line: Zero-based line number.
         character: Zero-based character offset on the line.
     """
+    file_uri = _to_file_uri(file_uri)
     client, err = _get_client(file_uri)
     if err:
         return err
@@ -137,10 +161,11 @@ def lsp_declaration(file_uri: str, line: int, character: int) -> dict:
     """Go to the declaration of the symbol at the given position.
 
     Args:
-        file_uri: File URI, e.g. "file:///E:/my-project/src/main.py".
+        file_uri: File URI or bare filesystem path, e.g. "file:///E:/my-project/src/main.py" or "E:\\my-project\\src\\main.py".
         line: Zero-based line number.
         character: Zero-based character offset on the line.
     """
+    file_uri = _to_file_uri(file_uri)
     client, err = _get_client(file_uri)
     if err:
         return err
@@ -155,10 +180,11 @@ def lsp_implementation(file_uri: str, line: int, character: int) -> dict:
     """Find implementations of the symbol at the given position.
 
     Args:
-        file_uri: File URI, e.g. "file:///E:/my-project/src/main.py".
+        file_uri: File URI or bare filesystem path, e.g. "file:///E:/my-project/src/main.py" or "E:\\my-project\\src\\main.py".
         line: Zero-based line number.
         character: Zero-based character offset on the line.
     """
+    file_uri = _to_file_uri(file_uri)
     client, err = _get_client(file_uri)
     if err:
         return err
@@ -173,10 +199,11 @@ def lsp_references(file_uri: str, line: int, character: int) -> dict:
     """Find all references to the symbol at the given position.
 
     Args:
-        file_uri: File URI, e.g. "file:///E:/my-project/src/main.py".
+        file_uri: File URI or bare filesystem path, e.g. "file:///E:/my-project/src/main.py" or "E:\\my-project\\src\\main.py".
         line: Zero-based line number.
         character: Zero-based character offset on the line.
     """
+    file_uri = _to_file_uri(file_uri)
     client, err = _get_client(file_uri)
     if err:
         return err
@@ -209,8 +236,9 @@ def lsp_document_symbols(file_uri: str) -> dict:
     Note: this will return !ALL! the symbols in the file, so can be expensive for large files. Use with care. For more targeted queries use `query_symbols` or `semantic_search` instead.
 
     Args:
-        file_uri: File URI, e.g. "file:///E:/my-project/src/main.py".
+        file_uri: File URI or bare filesystem path, e.g. "file:///E:/my-project/src/main.py" or "E:\\my-project\\src\\main.py".
     """
+    file_uri = _to_file_uri(file_uri)
     client, err = _get_client(file_uri)
     if err:
         return err

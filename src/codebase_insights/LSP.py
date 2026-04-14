@@ -67,7 +67,6 @@ class LSPClient:
             shell=(sys.platform == "win32"),
         )
         threading.Thread(target=self._read_messages, daemon=True).start()
-        threading.Thread(target=self._read_stderr, daemon=True).start()
 
     def shutdown_server(self):
         self._send_request("shutdown")
@@ -75,13 +74,6 @@ class LSPClient:
             self.process.terminate()
 
     # ── I/O threads ───────────────────────────────────────────────────────────
-
-    def _read_stderr(self):
-        while self.process and self.process.poll() is None:
-            line = self.process.stderr.readline()
-            if not line:
-                break
-            print(f"[{self.language.value} LSP stderr] {line.decode('utf-8', errors='replace')}", end="", flush=True)
 
     def _read_messages(self):
         while self.process and self.process.poll() is None:

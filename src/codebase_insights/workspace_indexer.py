@@ -457,6 +457,7 @@ class WorkspaceIndexer:
         print("[Indexer] Collecting workspace files...")
         all_files = list(self._iter_workspace_files())
         indexed = skipped = errors = 0
+        _bm_t_pass_start = time.perf_counter()
         with self._db_lock, self._connect() as con:
             with tqdm(
                 all_files,
@@ -476,9 +477,19 @@ class WorkspaceIndexer:
                     else:
                         errors += 1
                     bar.set_postfix(indexed=indexed, skipped=skipped, errors=errors)
+            # Count persisted symbols and refs for benchmark output
+            _bm_total_symbols = con.execute("SELECT COUNT(*) FROM symbols").fetchone()[0]
+            _bm_total_refs = con.execute("SELECT COUNT(*) FROM symbol_refs").fetchone()[0]
+        _bm_t_pass_end = time.perf_counter()
         print(
             f"[Indexer] Initial pass complete. "
             f"Indexed: {indexed}, Skipped (unchanged): {skipped}, Errors: {errors}"
+        )
+        print(
+            f"[BENCHMARK:INDEXER] wall_time={_bm_t_pass_end - _bm_t_pass_start:.2f}s "
+            f"files_total={len(all_files)} indexed={indexed} skipped={skipped} errors={errors} "
+            f"total_symbols={_bm_total_symbols} total_refs={_bm_total_refs}",
+            flush=True,
         )
 
         # Trigger semantic indexing for all pending symbols
