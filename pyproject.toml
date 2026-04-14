@@ -1,7 +1,11 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "codebase-insights"
 version = "0.1.0"
-description = "Add your description here"
+description = "LSP-powered code intelligence with AI semantic search, exposed as an MCP server"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -14,3 +18,9 @@ dependencies = [
     "langchain-chroma>=0.2",
     "chromadb>=0.6",
 ]
+
+[project.scripts]
+codebase-insights = "codebase_insights.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codebase_insights"]

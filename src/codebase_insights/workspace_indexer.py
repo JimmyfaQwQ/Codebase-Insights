@@ -27,8 +27,8 @@ from tqdm import tqdm
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
 from watchdog.observers import Observer
 
-import language_analysis
-import LSP
+from . import language_analysis
+from . import LSP
 
 # ---------------------------------------------------------------------------
 # Constants

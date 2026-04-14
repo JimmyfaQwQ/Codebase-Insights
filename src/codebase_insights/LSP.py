@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 import threading
 import subprocess
 
-import language_analysis
+from . import language_analysis
 
 # LSP language IDs for each supported language
 _LANGUAGE_ID: dict[language_analysis.Language, str] = {

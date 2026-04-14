@@ -14,13 +14,14 @@ An intelligent code analysis platform that combines Language Server Protocol (LS
 ## Architecture
 
 ```
-main.py              CLI entry point & startup orchestration
-language_analysis.py Detects languages; parses .gitignore
-LSP.py               Async LSP client (hover, definition, references, symbols, …)
-workspace_indexer.py Indexes symbols into SQLite; watches for file changes
-semantic_indexer.py  LLM summarization + ChromaDB vector indexing & search
-semantic_config.py   TOML config loader with interactive first-time setup wizard
-mcp_server.py        MCP server exposing all tools over HTTP
+src/codebase_insights/
+├── main.py              CLI entry point & startup orchestration
+├── language_analysis.py Detects languages; parses .gitignore
+├── LSP.py               Async LSP client (hover, definition, references, symbols, …)
+├── workspace_indexer.py Indexes symbols into SQLite; watches for file changes
+├── semantic_indexer.py  LLM summarization + ChromaDB vector indexing & search
+├── semantic_config.py   TOML config loader with interactive first-time setup wizard
+└── mcp_server.py        MCP server exposing all tools over HTTP
 ```
 
 **Artifacts created at the project root (all added to `.gitignore` automatically):**
@@ -51,6 +52,12 @@ Optional Python LSP plugins: `python-lsp-ruff`, `python-lsp-black`, `pylsp-mypy`
 ## Installation
 
 ```bash
+pip install codebase-insights
+```
+
+Or install from source for development:
+
+```bash
 git clone https://github.com/your-org/codebase-insights
 cd codebase-insights
 pip install -e .
@@ -59,7 +66,7 @@ pip install -e .
 ## Usage
 
 ```bash
-python main.py <project_root> [options]
+codebase-insights <project_root> [options]
 ```
 
 On first run an interactive wizard configures the LLM provider, embedding model, and indexing settings, saving the result to `.codebase-insights.toml`.
@@ -81,14 +88,14 @@ On first run an interactive wizard configures the LLM provider, embedding model,
 ollama serve
 
 # Terminal 2 – index and serve
-python main.py /path/to/your/project
+codebase-insights /path/to/your/project
 ```
 
 ### Quick start with OpenAI
 
 ```bash
 export OPENAI_API_KEY="sk-..."
-python main.py /path/to/your/project --new-config
+codebase-insights /path/to/your/project --new-config
 # choose "openai" when prompted for chat and embed providers
 ```
 

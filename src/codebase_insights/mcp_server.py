@@ -10,11 +10,11 @@ Endpoint: http://127.0.0.1:6789/mcp  (streamable-http transport)
 import os
 import sqlite3
 
-import LSP
+from . import LSP
 from mcp.server.fastmcp import FastMCP
 
-from language_analysis import detect_language, Language
-from workspace_indexer import _DB_FILENAME, SYMBOL_KIND_NAMES, canonical_path
+from .language_analysis import detect_language, Language
+from .workspace_indexer import _DB_FILENAME, SYMBOL_KIND_NAMES, canonical_path
 
 # ── MCP server ──────────────────────────────────────────────────────────────
 mcp = FastMCP(

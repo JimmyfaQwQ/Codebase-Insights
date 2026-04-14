@@ -25,8 +25,8 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_chroma import Chroma
 
-from workspace_indexer import _DB_FILENAME, SYMBOL_KIND_NAMES, canonical_path
-from semantic_config import (
+from .workspace_indexer import _DB_FILENAME, SYMBOL_KIND_NAMES, canonical_path
+from .semantic_config import (
     semantic_index_kinds, semantic_concurrency, semantic_batch_size,
     semantic_min_ref_count,
     ranking_file_suffix_penalties, ranking_path_fragment_penalties,

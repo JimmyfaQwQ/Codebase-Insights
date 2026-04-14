@@ -7,13 +7,13 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 
-import LSP
-import mcp_server
-import language_analysis
-import workspace_indexer
-import semantic_config
-import semantic_indexer as semantic_indexer_mod
-from workspace_indexer import canonical_path
+from . import LSP
+from . import mcp_server
+from . import language_analysis
+from . import workspace_indexer
+from . import semantic_config
+from . import semantic_indexer as semantic_indexer_mod
+from .workspace_indexer import canonical_path
 
 language_servers = {
     language_analysis.Language.PYTHON: ["pylsp"],
