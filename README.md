@@ -1,87 +1,97 @@
 # Codebase Insights
 
-**LSP-powered code intelligence for AI coding agents.**  
-Codebase Insights combines **Language Server Protocol (LSP)** analysis with **LLM-generated summaries** and **semantic embeddings** to build a persistent, structured understanding of a codebase.
+**Persistent code intelligence for AI coding agents.**
 
-It exposes this understanding through an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server, so any MCP-compatible client — such as Claude Desktop or GitHub Copilot — can query symbols, follow references, jump to definitions, and perform semantic code search over a repository.
+Codebase Insights combines **Language Server Protocol (LSP)** analysis, **LLM-generated summaries**, and **semantic embeddings** to build a structured, reusable understanding of a codebase.
+
+It exposes this understanding through an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server, making it usable from MCP-compatible clients such as Claude Desktop, GitHub Copilot, and other agent workflows.
 
 ---
 
-## Why Codebase Insights?
+## Why this exists
 
-Today’s coding agents still rely too heavily on naive keyword search over loosely guessed context. That creates three recurring problems:
+Most coding agents still rely heavily on keyword search over guessed context when trying to find relevant code. That causes three recurring problems:
 
 1. **Noisy retrieval**  
-   Keyword matches often return many superficially relevant files while missing the code that actually implements the behavior you care about.
+   Lexical matches often find superficially similar code while missing the symbol or implementation that actually matters.
 
-2. **Weak code relationship awareness**  
-   Definitions, references, declarations, and implementations are central to understanding a codebase, but plain text search does not model these relationships directly.
+2. **Weak structural understanding**  
+   Definitions, references, implementations, and symbol hierarchies are crucial for navigating real codebases, but plain text search does not model them directly.
 
 3. **No durable understanding across sessions**  
-   Most agents repeatedly rediscover the same repository structure every time they return to a project, wasting tokens, time, and context budget.
+   Agents often pay the repository exploration cost over and over again, even when nothing has changed.
 
 **Codebase Insights** addresses these limitations by combining:
 
 - **LSP servers** for precise symbol extraction and navigation
 - **LLM summarization** for higher-level semantic understanding
 - **Vector embeddings** for natural-language retrieval
-- **Persistent local indexes** so unchanged code does not need to be re-explored from scratch
+- **Persistent local indexes** so unchanged code does not need to be rediscovered from scratch
 
 The result is a reusable code-understanding layer for intelligent coding assistants.
 
 ---
 
-## What it gives you
+## What it provides
 
-- **Symbol-aware indexing** across an entire workspace
-- **Semantic search** over code behavior, not just filenames or symbol names
-- **Definition / references / implementations** via LSP
-- **Incremental updates** driven by file watching and hash-based skipping
-- **Persistent codebase understanding** across sessions
-- **MCP-compatible access** for AI clients and agent workflows
+- **Workspace-wide symbol indexing**
+- **Natural-language semantic code search**
+- **Definition / references / implementation navigation via LSP**
+- **Incremental re-indexing** driven by file watching and hashes
+- **Persistent codebase understanding across sessions**
+- **MCP server integration** for AI clients and agents
 
 ---
 
 ## Benchmark Highlights
 
-Results below are from benchmarking against a real TypeScript pnpm monorepo (`G:\SyntaxSenpai\`) with **118 files** and **5,615 symbols**.
+Benchmark results below are from **codebase-insights v0.1.1** on a real Electron + Vue + React Native monorepo (`G:\SyntaxSenpai`) with **118 files**, **5,587 symbols**, and **32,570 cross-references**.
 
 | Metric | Value |
 |---|---|
-| Full rebuild time | ~8.7 min |
-| Symbol indexing time | 91s |
-| Semantic summaries | 538 symbols |
-| Retrieval Hit@3 | 75% |
-| Peak memory (RSS) | 3.2 GB |
-| Storage footprint | 11.2 MB |
-| LLM API cost | ~$0.07 |
-| No-change catch-up | <0.1s |
-| Leaf-file incremental update | ~6s |
-| Core-file update | ~141s* |
-| New-file update | ~133s* |
-| LSP implementation discovery | 24 implementations found |
+| Full pipeline wall time | **427.7s (~7.1 min)** |
+| Pre-server startup | **6.17s** |
+| Workspace indexing | **62.01s** |
+| Semantic indexing | **178.26s** |
+| File summaries | **40.51s** |
+| Project summary (full) | **138.06s** |
+| Storage footprint | **13.80 MB** |
+| Peak RSS | **3,201 MiB** |
+| Retrieval Hit@1 | **68.4%** |
+| Retrieval Hit@3 | **89.5%** |
+| Retrieval Hit@5 | **100%** |
+| No-change catch-up | **0.05s** |
 
-\* Currently dominated by full project summary regeneration.
+### Incremental updates
 
-### Incremental update summary
+| Scenario | Total time |
+|---|---|
+| No change | **0.05s** |
+| Leaf-file edit | **~18s** |
+| Core-file edit | **~19s** |
+| New file | **~21s** |
 
-- **No-change restart:** `<0.1s` catch-up, `118/118` files skipped
-- **Leaf-file edit:** `~6s` end-to-end update
-- **Core-file edit:** `~141s`, currently dominated by project summary regeneration
-- **New file:** `~133s`, currently dominated by project summary regeneration
+### Retrieval quality highlights
 
-These results suggest that **symbol- and file-level incremental updates already work well**, while **project-level summarization is still too coarse-grained** and remains a major optimization target.
+- **Semantic search outperforms keyword-only symbol matching** on concept-level queries
+- A single natural-language query for streaming surfaced provider `stream()` implementations across multiple backends
+- LSP navigation resolved:
+  - **23 references** to `BaseAIProvider`
+  - **24 implementations** / subclasses
+- **Top-5 retrieval hit rate reached 100%** on the benchmark query set
+
+> See the full benchmark report in `docs/benchmark.md` for methodology, per-query results, incremental update scenarios, and failure analysis.
 
 ---
 
 ## Features
 
-- **Multi-language support** — Python, JavaScript/TypeScript, C++, Rust, powered by standard LSP servers
-- **Symbol indexing** — Full workspace scan with incremental re-indexing driven by filesystem watching
-- **Semantic search** — AI-generated summaries + vector embeddings for natural-language code queries
-- **Hybrid ranking** — Blends keyword matching with vector similarity, boosted by reference counts
-- **Flexible LLM backends** — Ollama (local) or OpenAI-compatible APIs for both chat and embeddings
-- **MCP server** — Exposes all capabilities over HTTP for use by any MCP client
+- **Multi-language support** — Python, JavaScript/TypeScript, C++, Rust via standard LSP servers
+- **Symbol indexing** — full workspace scan with file-watch-driven incremental re-indexing
+- **Semantic search** — AI-generated summaries + embeddings for natural-language retrieval
+- **Hybrid ranking** — blends lexical matching with vector similarity and reference-aware ranking
+- **Flexible model backends** — Ollama (local) or OpenAI-compatible APIs
+- **MCP server** — exposes all capabilities over HTTP for any MCP-compatible client
 
 ---
 
@@ -100,9 +110,9 @@ src/codebase_insights/
 
 ### On-disk artifacts
 
-These are created at the project root and automatically added to `.gitignore`:
+These are created at the target project root and automatically added to `.gitignore`:
 
-| File/Directory | Purpose |
+| File / Directory | Purpose |
 |---|---|
 | `.codebase-index.db` | SQLite symbol database |
 | `.codebase-semantic/` | ChromaDB vector store |
@@ -116,36 +126,46 @@ These are created at the project root and automatically added to `.gitignore`:
    Detects languages, validates required LSP servers, and initializes LSP clients.
 
 2. **Workspace indexing**  
-   Scans the repository via LSP `documentSymbol`, stores symbols and references in SQLite, and watches for file changes.
+   Scans the repository with LSP `documentSymbol`, stores symbols and references in SQLite, and monitors changes with filesystem watching.
 
 3. **Semantic indexing**  
-   Extracts source context for qualifying symbols, generates short LLM summaries, and embeds them into ChromaDB.
+   Extracts source context for qualifying symbols, generates short LLM summaries, and stores embeddings in ChromaDB.
 
-4. **Query serving**  
-   Exposes symbol and semantic capabilities over MCP.  
-   - `query_symbols` reads directly from SQLite  
-   - `semantic_search` uses hybrid vector + keyword ranking with reference-count boosting
+4. **File and project summarization**  
+   Generates file-level summaries and maintains a project summary for higher-level semantic retrieval and context.
 
 5. **Incremental updates**  
-   Uses file hashes and symbol-content hashes to skip unchanged work and only reprocess modified or newly added symbols.
+   Uses file hashes and symbol-content hashes to skip unchanged work and only reprocess modified or new symbols.
+
+6. **MCP query serving**  
+   Exposes symbol and semantic capabilities over MCP:
+   - `query_symbols(...)` reads from SQLite
+   - `semantic_search(...)` performs hybrid lexical + vector ranking
+   - `lsp_*` tools expose structural navigation directly from language servers
 
 ---
 
 ## Why not just use keyword search?
 
-Keyword search is still useful, but it has clear limitations for code understanding:
+Keyword search is still useful, but it breaks down quickly when agents need to reason about structure and behavior.
 
-| Problem | Keyword search | Codebase Insights |
+| Task | Keyword search | Codebase Insights |
 |---|---|---|
-| Find code by exact name | Good | Good |
-| Find code by concept or behavior | Weak | Stronger |
+| Find exact symbol names | Good | Good |
+| Find code by concept or behavior | Weak | Strong |
 | Jump to definitions | Manual / indirect | Built-in |
-| Find all references | Approximate | Precise via LSP |
-| Find implementations of an interface | Hard | Built-in |
-| Reuse understanding across sessions | None | Persistent |
+| Find references | Approximate | Precise via LSP |
+| Find implementations / subclasses | Hard | Built-in |
+| Reuse code understanding across sessions | No | Yes |
 | Reduce repeated exploration cost | No | Yes |
 
-Codebase Insights is designed to complement — and often outperform — plain lexical search when an agent needs to understand code structure and meaning rather than just match text.
+A concrete benchmark example:
+
+- Query: **“LLM streaming response handling”**
+- Semantic search returns provider `stream()` implementations directly
+- Keyword symbol search mostly returns names that merely contain `"stream"` such as helpers or chunking utilities
+
+That difference matters a lot for coding agents.
 
 ---
 
@@ -193,7 +213,7 @@ pip install -e .
 
 ## Quick start
 
-### Run with Ollama
+### Ollama
 
 ```bash
 # Terminal 1
@@ -203,7 +223,7 @@ ollama serve
 codebase-insights /path/to/your/project
 ```
 
-### Run with an OpenAI-compatible API
+### OpenAI-compatible API
 
 ```bash
 export OPENAI_API_KEY="sk-..."
@@ -211,7 +231,7 @@ codebase-insights /path/to/your/project --new-config
 # choose "openai" when prompted for chat and embed providers
 ```
 
-On first run, an interactive wizard creates `.codebase-insights.toml` and guides you through provider and indexing configuration.
+On first run, an interactive wizard creates `.codebase-insights.toml` and helps configure model providers and indexing settings.
 
 The MCP server starts on:
 
@@ -243,7 +263,7 @@ codebase-insights <project_root> [options]
 
 ## MCP tools
 
-Once running, the following tools are exposed to connected MCP clients:
+Once running, the following tools are available to connected MCP clients:
 
 | Tool | Description |
 |---|---|
@@ -253,18 +273,18 @@ Once running, the following tools are exposed to connected MCP clients:
 | `lsp_definition(file_uri, line, character)` | Jump to definition |
 | `lsp_declaration(file_uri, line, character)` | Find declarations |
 | `lsp_implementation(file_uri, line, character)` | Find implementations |
-| `lsp_references(file_uri, line, character)` | Find references to a symbol |
+| `lsp_references(file_uri, line, character)` | Find all references to a symbol |
 | `lsp_document_symbols(file_uri)` | List all symbols in a file |
 | `query_symbols(path, kinds, name_query, limit)` | Query the SQLite index by path, kind, or name |
-| `semantic_search(query, limit, kinds)` | Perform natural-language semantic search |
+| `semantic_search(query, limit, kinds)` | Natural-language semantic search |
 
-> **Note:** some LSP servers require `file:///` URIs rather than bare filesystem paths for file-based operations.
+> `file_uri` should use normal file URIs such as `file:///G:/repo/path/to/file.ts`.
 
 ---
 
 ## Configuration
 
-The config file `.codebase-insights.toml` is generated interactively on first run.
+The config file `.codebase-insights.toml` is created interactively on first run.
 
 ### Example
 
@@ -284,9 +304,9 @@ model = "bge-m3"
 
 [semantic]
 index_kinds = ["Class", "Method", "Function", "Interface", "Enum", "Constructor"]
-concurrency = 16             # parallel LLM requests (set to 1 for Ollama)
+concurrency = 16
 batch_size = 16
-min_ref_count = 3            # only index symbols referenced at least N times
+min_ref_count = 1
 
 [ranking]
 # noise penalties and re-ranking weights (see semantic_config.py for defaults)
@@ -294,7 +314,7 @@ min_ref_count = 3            # only index symbols referenced at least N times
 
 ### Environment variable overrides
 
-The following environment variables override corresponding config values:
+These environment variables override the corresponding TOML values:
 
 - `OPENAI_API_KEY`
 - `OPENAI_BASE_URL`
@@ -303,34 +323,39 @@ The following environment variables override corresponding config values:
 
 ## Example use cases
 
-Codebase Insights is especially useful for tasks like:
+Codebase Insights is useful for questions like:
 
-- **“Find the real implementation of this feature.”**
-- **“Show me every implementation of this interface.”**
-- **“What references this symbol?”**
+- **“Find all implementations of this provider interface.”**
+- **“What handles WebSocket messages in this repo?”**
 - **“Where is configuration loaded and applied?”**
-- **“Find the code responsible for streaming responses.”**
-- **“Search the repository by behavior, not just by exact names.”**
+- **“Show me every reference to this base class.”**
+- **“Find the real code responsible for streaming responses.”**
+- **“Search the repository by behavior, not just by exact symbol names.”**
 
-It is particularly effective for AI agents that need to:
-- move from natural language to likely symbols
-- traverse definitions / references / implementations
+It is particularly effective for agents that need to:
+
+- move from natural-language intent to a likely symbol
+- expand from that symbol to definitions, references, and implementations
 - reduce file-opening and grep iteration overhead
-- retain codebase understanding across sessions
+- retain reusable codebase understanding across sessions
 
 ---
 
-## Current limitations
+## Known limitations
 
-Current benchmark and usage findings suggest the following rough edges:
+Current limitations and trade-offs include:
 
-- **Project summary updates are too coarse-grained** and currently dominate structural edit costs
-- **Workspace startup has a noticeable fixed cost** on larger repositories
-- **Convention-based routing or framework magic** may not surface well through symbol indexing alone
-- **Inline behaviors** (for example, distributed `try/catch` logic) are harder to retrieve semantically than named abstractions
-- Some LSP servers require strict `file:///` URI formatting
+- **Only a subset of symbols are semantically indexed**  
+  Filtering by symbol kind and reference count improves quality and cost, but reduces coverage.
 
-These are active areas for improvement rather than fundamental design blockers.
+- **Inline or anonymous logic is harder to retrieve semantically**  
+  For example, anonymous callbacks and ad-hoc `try/catch` behavior do not form named symbols.
+
+- **Convention-based framework behavior may be less visible**  
+  File-system routing or other convention-heavy patterns may not map cleanly to LSP symbol graphs.
+
+- **Full project summaries remain relatively expensive**  
+  Incremental project-summary updates are much faster now, but full project summarization is still one of the largest rebuild costs.
 
 ---
 
@@ -348,38 +373,43 @@ These are active areas for improvement rather than fundamental design blockers.
 
 ## Project status
 
-Codebase Insights is currently an **early-stage but functional** code-understanding platform.
+Codebase Insights is an **early-stage but functional** code-understanding platform.
 
-What is already validated:
-- full-workspace symbol indexing
-- semantic search over indexed symbols
-- LSP-backed symbol navigation
+Validated so far:
+
+- workspace-wide symbol indexing
+- LSP-backed navigation
+- semantic retrieval over indexed symbols
 - persistent on-disk indexes
-- hash-based skipping for unchanged code
-- practical incremental updates for small edits
+- near-zero no-change catch-up
+- practical incremental update behavior
+- incremental project summary updates
+- automated benchmark coverage
 
-What is still being improved:
-- startup latency
-- project-level summary granularity
-- query quality for convention-heavy code patterns
-- ergonomics around LSP path handling
+Still improving:
+
+- retrieval quality on diffuse / anonymous logic
+- indexing coverage trade-offs
+- performance on larger repositories
+- ergonomics and documentation
 
 ---
 
 ## Contributing
 
-Contributions, feedback, and benchmark results on additional repositories are welcome.
+Contributions, benchmark results, bug reports, and design feedback are welcome.
 
-Particularly useful areas for contribution include:
+Especially valuable areas include:
+
 - performance optimization
+- retrieval quality tuning
 - incremental update behavior
-- retrieval quality evaluation
-- additional LSP integrations
-- better MCP client ergonomics
+- support for more repo styles and languages
 - benchmark automation
+- MCP client ergonomics
 
 ---
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

@@ -83,12 +83,23 @@ def _get_process_cpu_pct(proc: psutil.Process) -> float:
         return 0.0
 
 
-def _tee_reader(stream, lines: list[str], label: str) -> None:
-    """Read *stream* line-by-line, print each line, and append to *lines*."""
+def _tee_reader(
+    stream,
+    lines: list[str],
+    label: str,
+    log_fh=None,
+    log_lock: threading.Lock | None = None,
+) -> None:
+    """Read *stream* line-by-line, print each line, append to *lines*, and
+    optionally stream each line to *log_fh* immediately."""
     for raw in stream:
         line = raw.rstrip("\n")
         print(f"{label}{line}" if label else line)
         lines.append(line)
+        if log_fh is not None:
+            with (log_lock or threading.Lock()):
+                log_fh.write(f"{label}{line}\n")
+                log_fh.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -148,12 +159,16 @@ def main() -> None:
     # Initialise CPU measurement baseline
     psutil_proc.cpu_percent(interval=None)
 
+    # Open log file for streaming writes; both threads share handle + lock.
+    log_fh = open(log_path, "w", encoding="utf-8")
+    log_lock = threading.Lock()
+
     # Read stdout/stderr in background threads so we don't deadlock
     t_stdout = threading.Thread(
-        target=_tee_reader, args=(proc.stdout, stdout_lines, ""), daemon=True
+        target=_tee_reader, args=(proc.stdout, stdout_lines, "", log_fh, log_lock), daemon=True
     )
     t_stderr = threading.Thread(
-        target=_tee_reader, args=(proc.stderr, stderr_lines, "[STDERR] "), daemon=True
+        target=_tee_reader, args=(proc.stderr, stderr_lines, "[STDERR] ", log_fh, log_lock), daemon=True
     )
     t_stdout.start()
     t_stderr.start()
@@ -255,8 +270,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Write outputs
     # ------------------------------------------------------------------
-    with open(log_path, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(stdout_lines + ["", "--- STDERR ---", ""] + stderr_lines))
+    log_fh.close()
     with open(json_path, "w", encoding="utf-8") as fh:
         json.dump(report, fh, indent=2)
 

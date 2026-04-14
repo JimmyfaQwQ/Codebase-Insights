@@ -414,6 +414,13 @@ class SemanticIndexer:
                 self._do_remove_file(file_path)
             except Exception as e:
                 print(f"[Semantic] Error removing file {file_path}: {e}")
+                return
+        # Trigger project summary regeneration outside the lock so LLM calls
+        # don't block concurrent indexing operations.
+        try:
+            self._index_project_summary()
+        except Exception as e:
+            print(f"[Semantic] Error regenerating project summary after file removal: {e}")
 
     def clear_semantic(self):
         """Wipe all summaries and the ChromaDB store so everything is re-generated."""
@@ -1391,6 +1398,7 @@ class SemanticIndexer:
     # ------------------------------------------------------------------
 
     def _do_remove_file(self, file_path: str):
+        norm = canonical_path(file_path)
         con = sqlite3.connect(self._db_path, check_same_thread=False)
         con.execute("PRAGMA foreign_keys=ON")
         con.row_factory = sqlite3.Row
@@ -1399,7 +1407,7 @@ class SemanticIndexer:
             rows = con.execute(
                 "SELECT chroma_id FROM symbol_summaries WHERE symbol_id IN "
                 "(SELECT id FROM symbols WHERE file_path=?)",
-                (file_path,),
+                (norm,),
             ).fetchall()
             chroma_ids = [r["chroma_id"] for r in rows]
             if chroma_ids:
@@ -1410,8 +1418,11 @@ class SemanticIndexer:
             con.execute(
                 "DELETE FROM symbol_summaries WHERE symbol_id IN "
                 "(SELECT id FROM symbols WHERE file_path=?)",
-                (file_path,),
+                (norm,),
             )
+            # Also remove the file-level summary so the project summary
+            # is regenerated and no longer references the deleted file.
+            con.execute("DELETE FROM file_summaries WHERE file_path=?", (norm,))
             con.commit()
         finally:
             con.close()

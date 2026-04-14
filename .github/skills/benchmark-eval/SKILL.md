@@ -151,9 +151,9 @@ Just start the server and wait for initial pass to finish.
 
 ### Scenario B — Leaf file small edit
 Pick a provider/utility file with few symbols (e.g. a single-provider file).
-Edit: change a constant value or add a comment inside a method body (name unchanged).
+Edit: add a function call at the top level of the file (name unchanged).
 - Expected: watchdog triggers ~1s, `SEMANTIC` processes only that file's symbols (~5s for 3–5 syms)
-- FILE_SUMMARIES / PROJECT_SUMMARY should **not** trigger if only content changes (no structural symbol change)
+- FILE_SUMMARIES / PROJECT_SUMMARY should **not** trigger if only top level content changes (no definition / symbol change)
 
 ### Scenario C — Core file edit (signature change)
 Edit a widely-imported interface file (e.g. add an optional field to a core interface).
