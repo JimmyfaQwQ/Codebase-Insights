@@ -131,6 +131,16 @@ CREATE TABLE IF NOT EXISTS project_summary (
 );
 """
 
+_PROJECT_SOURCES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS project_summary_sources (
+    file_path       TEXT PRIMARY KEY,
+    summary_hash    TEXT NOT NULL
+);
+"""
+
+# Fraction of files that may change before falling back to full regeneration
+_INCREMENTAL_THRESHOLD = 0.3
+
 _SYSTEM_PROMPT = (
     "You are a code documentation assistant. Given a code symbol and its source context, "
     "write a concise summary (1-3 sentences) in English describing what this symbol does, "
@@ -159,6 +169,20 @@ _PROJECT_SYSTEM_PROMPT = (
     "A short prose description of how data moves through the system end-to-end.\n"
     "## Extension Points\n"
     "A bullet list: `To do X → edit Y (function/class Z)` for the most common change scenarios."
+)
+
+_INCREMENTAL_PROJECT_SYSTEM_PROMPT = (
+    "You are a software architect. You are given the current project summary and a list of "
+    "file-level changes (new, updated, or removed files with their summaries). "
+    "Update the project summary to reflect these changes. "
+    "Keep the same four-section structure:\n"
+    "## Architecture Overview\n"
+    "## File Responsibilities\n"
+    "## Data Flow\n"
+    "## Extension Points\n"
+    "Make minimal, targeted edits — only modify sections affected by the changes. "
+    "If a file was removed, remove it from File Responsibilities and adjust other sections if needed. "
+    "If a file was added or updated, update the relevant sections accordingly."
 )
 
 
@@ -218,6 +242,7 @@ class SemanticIndexer:
         con.executescript(_SUMMARY_SCHEMA)
         con.executescript(_FILE_SUMMARY_SCHEMA)
         con.executescript(_PROJECT_SUMMARY_SCHEMA)
+        con.executescript(_PROJECT_SOURCES_SCHEMA)
         # Migrate: rename file_hash -> symbol_hash if the old column still exists
         cols = {row[1] for row in con.execute("PRAGMA table_info(symbol_summaries)").fetchall()}
         if "file_hash" in cols and "symbol_hash" not in cols:
@@ -408,6 +433,7 @@ class SemanticIndexer:
                 con.execute("DELETE FROM symbol_summaries")
                 con.execute("DELETE FROM file_summaries")
                 con.execute("DELETE FROM project_summary")
+                con.execute("DELETE FROM project_summary_sources")
                 con.commit()
                 con.close()
                 print("[Semantic] Semantic index cleared – full re-summarisation will run on startup.")
@@ -424,6 +450,7 @@ class SemanticIndexer:
                 self.ensure_schema(con)
                 con.execute("DELETE FROM file_summaries")
                 con.execute("DELETE FROM project_summary")
+                con.execute("DELETE FROM project_summary_sources")
                 con.commit()
                 con.close()
                 print("[Semantic] File/project summaries cleared – will be re-generated on next index run.")
@@ -867,7 +894,14 @@ class SemanticIndexer:
             con.close()
 
     def _index_project_summary(self) -> None:
-        """Regenerate the project-level summary if any file summary has changed."""
+        """Regenerate the project-level summary if any file summary has changed.
+
+        Uses an **incremental** strategy when possible: if an existing project
+        summary exists and only a small fraction of file summaries changed, the
+        LLM is asked to *update* the summary based on a compact diff rather
+        than regenerating from the full file list.  This dramatically reduces
+        prompt size and latency for common edit scenarios.
+        """
         _bm_ps_start = time.perf_counter()
         try:
             con = sqlite3.connect(self._db_path, check_same_thread=False)
@@ -890,11 +924,32 @@ class SemanticIndexer:
             summaries_hash = hashlib.sha256(combined.encode("utf-8")).hexdigest()
 
             existing = con.execute(
-                "SELECT summaries_hash FROM project_summary WHERE id=1"
+                "SELECT summaries_hash, summary FROM project_summary WHERE id=1"
             ).fetchone()
             if existing and existing["summaries_hash"] == summaries_hash:
                 return
 
+            # --- Try incremental update -----------------------------------
+            if existing:
+                changed, new, removed = self._compute_file_summary_diff(con, rows)
+                total_changes = len(changed) + len(new) + len(removed)
+                threshold = max(int(len(rows) * _INCREMENTAL_THRESHOLD), 5)
+                if 0 < total_changes <= threshold:
+                    summary = self._incremental_project_summary(
+                        existing["summary"], changed, new, removed,
+                    )
+                    if summary:
+                        self._save_project_summary(con, summary, summaries_hash, rows)
+                        print(f"[Semantic] Project summary updated (incremental, {total_changes} change(s)).")
+                        print(
+                            f"[BENCHMARK:PROJECT_SUMMARY] wall_time={time.perf_counter() - _bm_ps_start:.2f}s "
+                            f"mode=incremental changes={total_changes}",
+                            flush=True,
+                        )
+                        return
+                    # If incremental failed, fall through to full regeneration
+
+            # --- Full regeneration ----------------------------------------
             print("[Semantic] Generating project summary...")
             file_lines = [
                 f"- {os.path.relpath(r['file_path'], self._root_dir)}: {r['summary']}"
@@ -912,16 +967,125 @@ class SemanticIndexer:
                 print(f"[Semantic] LLM call failed for project summary: {e}")
                 return
 
-            con.execute(
-                """INSERT OR REPLACE INTO project_summary (id, summary, generated_at, summaries_hash)
-                   VALUES (1, ?, ?, ?)""",
-                (summary, time.time(), summaries_hash),
-            )
-            con.commit()
+            self._save_project_summary(con, summary, summaries_hash, rows)
             print("[Semantic] Project summary updated.")
-            print(f"[BENCHMARK:PROJECT_SUMMARY] wall_time={time.perf_counter() - _bm_ps_start:.2f}s", flush=True)
+            print(
+                f"[BENCHMARK:PROJECT_SUMMARY] wall_time={time.perf_counter() - _bm_ps_start:.2f}s "
+                f"mode=full",
+                flush=True,
+            )
         finally:
             con.close()
+
+    # ------------------------------------------------------------------
+    # Project summary helpers
+    # ------------------------------------------------------------------
+
+    def _save_project_summary(
+        self,
+        con: sqlite3.Connection,
+        summary: str,
+        summaries_hash: str,
+        rows: list,
+    ):
+        """Persist the project summary and a per-file snapshot for future diffs."""
+        con.execute(
+            """INSERT OR REPLACE INTO project_summary (id, summary, generated_at, summaries_hash)
+               VALUES (1, ?, ?, ?)""",
+            (summary, time.time(), summaries_hash),
+        )
+        # Snapshot per-file summary hashes so the next run can compute a diff
+        con.execute("DELETE FROM project_summary_sources")
+        con.executemany(
+            "INSERT INTO project_summary_sources (file_path, summary_hash) VALUES (?, ?)",
+            [
+                (r["file_path"], hashlib.sha256(r["summary"].encode("utf-8")).hexdigest())
+                for r in rows
+            ],
+        )
+        con.commit()
+
+    def _compute_file_summary_diff(
+        self,
+        con: sqlite3.Connection,
+        current_rows: list,
+    ) -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[str]]:
+        """Compare current file summaries to the snapshot from the last project
+        summary generation.
+
+        Returns ``(changed, new, removed)`` where *changed* and *new* are lists
+        of ``(file_path, summary)`` tuples and *removed* is a list of file paths.
+        """
+        try:
+            snapshot_rows = con.execute(
+                "SELECT file_path, summary_hash FROM project_summary_sources"
+            ).fetchall()
+            stored = {r["file_path"]: r["summary_hash"] for r in snapshot_rows}
+        except sqlite3.Error:
+            return [], [], []  # No snapshot → can't compute diff
+
+        if not stored:
+            return [], [], []
+
+        current_map = {r["file_path"]: r["summary"] for r in current_rows}
+
+        changed: list[tuple[str, str]] = []
+        new: list[tuple[str, str]] = []
+        removed: list[str] = []
+
+        for fp, summary in current_map.items():
+            h = hashlib.sha256(summary.encode("utf-8")).hexdigest()
+            if fp not in stored:
+                new.append((fp, summary))
+            elif stored[fp] != h:
+                changed.append((fp, summary))
+
+        for fp in stored:
+            if fp not in current_map:
+                removed.append(fp)
+
+        return changed, new, removed
+
+    def _incremental_project_summary(
+        self,
+        old_summary: str,
+        changed: list[tuple[str, str]],
+        new: list[tuple[str, str]],
+        removed: list[str],
+    ) -> str | None:
+        """Ask the LLM to update the project summary based on a compact diff."""
+        parts: list[str] = []
+        if new:
+            parts.append("New files:")
+            for fp, summary in new:
+                rel = os.path.relpath(fp, self._root_dir)
+                parts.append(f"  + {rel}: {summary}")
+        if changed:
+            parts.append("Updated files:")
+            for fp, summary in changed:
+                rel = os.path.relpath(fp, self._root_dir)
+                parts.append(f"  ~ {rel}: {summary}")
+        if removed:
+            parts.append("Removed files:")
+            for fp in removed:
+                rel = os.path.relpath(fp, self._root_dir)
+                parts.append(f"  - {rel}")
+
+        changes_text = "\n".join(parts)
+        user_msg = (
+            f"Current project summary:\n\n{old_summary}\n\n"
+            f"Changes:\n{changes_text}"
+        )
+
+        try:
+            response = self._llm.invoke([
+                SystemMessage(content=_INCREMENTAL_PROJECT_SYSTEM_PROMPT),
+                HumanMessage(content=user_msg),
+            ])
+            return response.content.strip()
+        except Exception as e:
+            print(f"[Semantic] Incremental project summary LLM call failed: {e}")
+            return None
 
     def _find_pending_symbols(
         self,

@@ -38,12 +38,18 @@ class LSPExecutionResult:
 
 
 class LSPClient:
+    # Languages where cross-file references require a compilation database.
+    # Without one, the LSP returns timeouts or incomplete results.
+    _NEEDS_COMPILATION_DB = {language_analysis.Language.CPP}
+    _COMPILATION_DB_FILES = ("compile_commands.json", "compile_flags.txt")
+
     def __init__(self, language: language_analysis.Language, server_cmd: list):
         self.language = language
         self.server_cmd = server_cmd
         self.process: Optional[subprocess.Popen] = None
         self.root_uri: Optional[str] = None
         self.LSP_init_result: Optional[LSPInitResult] = None
+        self.has_compilation_database: bool = False
         self._request_id = 0
         self._id_lock = threading.Lock()
         # Maps request id -> (Event, response_box)
@@ -52,6 +58,35 @@ class LSPClient:
         self._pending_lock = threading.Lock()
         self._open_documents: Set[str] = set()
         self._open_doc_lock = threading.Lock()
+
+    @property
+    def references_reliable(self) -> bool:
+        """Whether ``textDocument/references`` is expected to return useful results.
+
+        For languages that require a compilation database (C/C++/ObjC), this is
+        ``False`` when no ``compile_commands.json`` / ``compile_flags.txt`` was
+        found in the project tree.  For all other languages it follows the
+        server's reported capability.
+        """
+        if not self.LSP_init_result or not self.LSP_init_result.references_provider:
+            return False
+        if self.language in self._NEEDS_COMPILATION_DB:
+            return self.has_compilation_database
+        return True
+
+    @property
+    def supports_indexing(self) -> bool:
+        """Whether bulk workspace indexing is expected to work reliably.
+
+        For languages that require a compilation database, **all** LSP
+        requests (including ``documentSymbol``) can be slow or unreliable
+        without one.  The workspace indexer should skip these files entirely;
+        the client remains available for on-demand MCP queries where a
+        per-file timeout is acceptable.
+        """
+        if self.language in self._NEEDS_COMPILATION_DB:
+            return self.has_compilation_database
+        return True
 
     # ── Server lifecycle ──────────────────────────────────────────────────────
 
@@ -176,6 +211,33 @@ class LSPClient:
         self.LSP_init_result = LSPInitResult(result)
         self.root_uri = root_uri
         self.send_notification("initialized")
+
+        # Detect compilation database for languages that need one
+        if self.language in self._NEEDS_COMPILATION_DB:
+            self.has_compilation_database = self._detect_compilation_database(root_path)
+            if not self.has_compilation_database:
+                print(
+                    f"[{self.language.value} LSP] No compilation database found "
+                    f"(looked for {', '.join(self._COMPILATION_DB_FILES)} in project tree). "
+                    f"C/C++ files will be skipped during workspace indexing. "
+                    f"On-demand LSP queries (hover, definition, etc.) remain available."
+                )
+            else:
+                print(f"[{self.language.value} LSP] Compilation database detected.")
+
+    def _detect_compilation_database(self, root_path: str) -> bool:
+        """Walk from *root_path* upward looking for a compilation database file."""
+        # First check the project root itself, then walk parents
+        path = os.path.abspath(root_path)
+        for _ in range(20):  # cap to avoid infinite loop at filesystem root
+            for name in self._COMPILATION_DB_FILES:
+                if os.path.isfile(os.path.join(path, name)):
+                    return True
+            parent = os.path.dirname(path)
+            if parent == path:
+                break
+            path = parent
+        return False
 
     # ── LSP requests ──────────────────────────────────────────────────────────
 

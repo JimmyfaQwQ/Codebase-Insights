@@ -128,6 +128,10 @@ def canonical_path(path: str) -> str:
         stripped = path[5:].lstrip("/")
         # Decode percent-encoding (%3A -> :, %5C -> \, %20 -> space, …)
         stripped = unquote(stripped)
+        # On POSIX, absolute paths start with '/' — restore the leading slash
+        # that lstrip removed (Windows paths begin with a drive letter, not '/').
+        if os.name != "nt":
+            stripped = "/" + stripped
         path = stripped
     # Normalise slashes to OS separator
     path = path.replace("/", os.sep).replace("\\", os.sep)
@@ -195,7 +199,15 @@ def _flatten_symbols(symbols: list, file_path: str, parent_name: Optional[str] =
 class _GitignoreFilter:
     """
     Parses all .gitignore files under root_dir and decides whether a given
-    path should be ignored.  Call reload() after any .gitignore changes.
+    path should be ignored.
+
+    Initialisation is **lazy**: the filter starts empty and is progressively
+    populated by ``scan_directory()`` calls during the workspace walk.  This
+    avoids an expensive upfront ``os.walk`` over the entire tree (which
+    previously included huge ignored directories like ``node_modules/``).
+
+    Call ``reload()`` to do a full re-scan (with pruning) — this is only
+    needed when a ``.gitignore`` file itself changes at runtime.
     """
 
     def __init__(self, root_dir: str):
@@ -203,12 +215,34 @@ class _GitignoreFilter:
         self._ignored_paths: set[str] = set()
         self._ignored_names: set[str] = set()
         self._lock = threading.Lock()
-        self.reload()
+        # Intentionally NOT calling reload() here.  The filter will be
+        # populated lazily via scan_directory() during _iter_workspace_files.
 
-    def reload(self):
+    def scan_directory(self, dirpath: str, filenames: list[str]):
+        """Parse ``.gitignore`` in *dirpath* (if present) and add its rules.
+
+        This is meant to be called for each directory during the workspace
+        walk so that ignore rules are discovered progressively.
+        """
+        if ".gitignore" not in filenames:
+            return
         paths: set[str] = set()
         names: set[str] = set()
-        for dirpath, _dirs, filenames in os.walk(self._root_dir):
+        language_analysis._parse_gitignore(
+            os.path.join(dirpath, ".gitignore"),
+            dirpath,
+            paths,
+            names,
+        )
+        with self._lock:
+            self._ignored_paths.update(paths)
+            self._ignored_names.update(names)
+
+    def reload(self):
+        """Full re-scan with directory pruning (much faster than walking everything)."""
+        paths: set[str] = set()
+        names: set[str] = set()
+        for dirpath, dirnames, filenames in os.walk(self._root_dir, topdown=True):
             if ".gitignore" in filenames:
                 language_analysis._parse_gitignore(
                     os.path.join(dirpath, ".gitignore"),
@@ -216,6 +250,13 @@ class _GitignoreFilter:
                     paths,
                     names,
                 )
+            # Prune directories already known to be ignored so we never
+            # descend into e.g. node_modules/ or .git/
+            dirnames[:] = [
+                d for d in dirnames
+                if os.path.normpath(os.path.join(dirpath, d)) not in paths
+                and d not in names
+            ]
         with self._lock:
             self._ignored_paths = paths
             self._ignored_names = names
@@ -377,6 +418,12 @@ class WorkspaceIndexer:
         if client is None:
             return _IndexResult.SKIPPED
 
+        # Skip languages whose LSP cannot index reliably (e.g. C/C++
+        # without a compilation database).  The client is still available
+        # for on-demand MCP queries.
+        if not client.supports_indexing:
+            return _IndexResult.SKIPPED
+
         try:
             current_hash = _file_sha256(file_path)
         except OSError as e:
@@ -400,6 +447,11 @@ class WorkspaceIndexer:
         flat_symbols = _flatten_symbols(sym_result.result, file_path)
         flat_symbols = [s for s in flat_symbols if not _ANON_NAME_RE.search(s["name"])]
 
+        # Only request references if the LSP can reliably resolve them.
+        # For C/C++ without a compilation database this is always False,
+        # avoiding minutes of pointless timeouts per file.
+        collect_refs = client.references_reliable
+
         for sym in flat_symbols:
             con.execute(
                 """INSERT INTO symbols
@@ -412,6 +464,9 @@ class WorkspaceIndexer:
                 ),
             )
             sym_id = con.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+            if not collect_refs:
+                continue
 
             refs_result = client.references(
                 {"uri": uri},
@@ -440,8 +495,15 @@ class WorkspaceIndexer:
     # ------------------------------------------------------------------
 
     def _iter_workspace_files(self):
-        """Yield normalized absolute paths for all indexable files."""
+        """Yield normalized absolute paths for all indexable files.
+
+        This also **progressively populates** the gitignore filter by calling
+        ``scan_directory()`` for each directory we enter, so that ignore rules
+        are available before we decide which sub-directories to descend into.
+        """
         for dirpath, dirnames, filenames in os.walk(self._root_dir, topdown=True):
+            # Parse .gitignore in this dir first (populates the filter lazily)
+            self._gitignore.scan_directory(dirpath, filenames)
             dirnames[:] = [
                 d for d in dirnames
                 if not self._gitignore.is_ignored(os.path.join(dirpath, d))
