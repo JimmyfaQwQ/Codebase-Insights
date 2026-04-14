@@ -2,6 +2,12 @@
 
 An intelligent code analysis platform that combines Language Server Protocol (LSP) technology with AI-powered semantic search to provide comprehensive code intelligence. Exposes capabilities via an [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server, making it usable by any MCP-compatible AI client such as Claude Desktop or GitHub Copilot.
 
+## Motivation
+
+Today’s coding agents still depend too heavily on naive keyword search over loosely guessed context when trying to locate relevant code. This often produces noisy results, misses the semantic meaning of the code, and wastes valuable LLM context on irrelevant files and symbols. They also struggle to follow core code relationships — such as definitions, references, and implementations — that are essential for deep code understanding. On top of that, most agents fail to retain any durable understanding of a codebase across sessions, forcing them to repeatedly rediscover the same structure and semantics at unnecessary cost.
+
+**Codebase Insights** addresses these limitations by combining Language Server Protocol (LSP) servers for precise symbol extraction and navigation with LLM-powered summarization and semantic embeddings. The result is a foundation for intelligent coding assistants that can navigate codebases more accurately, understand them more semantically, and avoid paying the exploration cost from scratch in every session.
+
 ## Features
 
 - **Multi-language support** — Python, JavaScript/TypeScript, C++, Rust, powered by standard LSP servers
