@@ -1,0 +1,40 @@
+# Codebase-Insights example configuration
+# Chat (summarisation) and embedding providers are independent —
+# you can mix providers, e.g. OpenAI for chat + Ollama for embeddings.
+
+[chat]
+provider = "ollama"              # "ollama" or "openai"
+
+[chat.ollama]
+base_url = "http://localhost:11434"
+model    = "qwen2.5"
+
+[chat.openai]
+api_key  = ""                    # Required when chat.provider = "openai"
+base_url = ""                    # Leave blank for official OpenAI; set for compatible APIs (DeepSeek, Azure, etc.)
+model    = "gpt-4o-mini"
+
+[embed]
+provider = "ollama"              # "ollama" or "openai"
+
+[embed.ollama]
+base_url = "http://localhost:11434"
+model    = "nomic-embed-text"
+
+[embed.openai]
+api_key  = ""                    # Required when embed.provider = "openai"
+base_url = ""
+model    = "text-embedding-3-small"
+
+[semantic]
+index_kinds = [
+    "Class",
+    "Method",
+    "Function",
+    "Interface",
+    "Enum",
+    "Constructor",
+]
+concurrency = 16   # parallel LLM requests per batch (increase for OpenAI, keep low for Ollama)
+batch_size  = 16  # symbols processed per round
+min_ref_count = 5  # skip symbols referenced fewer than this many times
