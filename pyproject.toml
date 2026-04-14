@@ -7,6 +7,7 @@ name = "codebase-insights"
 version = "0.1.0"
 description = "LSP-powered code intelligence with AI semantic search, exposed as an MCP server"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.11"
 dependencies = [
     "mcp[cli]>=1.27.0",
@@ -24,3 +25,9 @@ codebase-insights = "codebase_insights.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/codebase_insights"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
