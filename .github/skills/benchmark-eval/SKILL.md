@@ -16,105 +16,97 @@ argument-hint: 'Target repo path, e.g. "G:\\MyProject\\"'
 
 ---
 
-## Overview of Phases
+## Automated Pipeline — scripts/run_benchmark.py
 
+Most benchmark phases are fully automated. Run this first.
+
+```powershell
+# Standard run (Phases 0, 1, 3, 5, 7)
+python scripts/run_benchmark.py "G:\MyProject\"
+
+# Include full rebuild (Phase 2)
+python scripts/run_benchmark.py "G:\MyProject\" --full-rebuild
+
+# Include retrieval quality (Phase 4)
+python scripts/run_benchmark.py "G:\MyProject\" --queries-file queries.json
+
+# Override auto-selected files for incremental scenarios
+python scripts/run_benchmark.py "G:\MyProject\" --leaf-file src/utils.ts --core-file src/base.ts
+
+# Re-generate report only from saved state
+python scripts/run_benchmark.py "G:\MyProject\" --phases 7
+
+# Full run
+python scripts/run_benchmark.py "G:\MyProject\" --full-rebuild --queries-file queries.json --phases 0,1,2,3,4,5,7
 ```
-Phase 0 — Pre-flight checks (kill existing server, verify config, capture env)
-Phase 1 — Verify [BENCHMARK:*] markers present in source
-Phase 2 — Full rebuild execution + analysis
-Phase 3 — Incremental update scenarios (A–D)
-Phase 4 — Retrieval quality testing (semantic search)
-Phase 5 — LSP navigation testing
-Phase 6 — Bug triage (fix issues found during eval)
-Phase 7 — Report compilation
+
+### How to invoke — critical
+
+Always invoke with run_in_terminal using mode=sync and timeout=0:
+
+- mode=sync: wait until process exits
+- timeout=0: no timeout for long runs
+
+Do not use mode=async for this script.
+
+### What the script automates
+
+| Phase | Automated action |
+|---|---|
+| 0 — Pre-flight | Kill port 6789, verify config, capture environment + DB stats |
+| 1 — Markers | Check BENCHMARK markers and flush usage |
+| 2 — Full rebuild | Run monitor wrapper and collect full rebuild artifacts |
+| 3 — Incremental A-D | Run all scenarios, collect timings, revert test edits |
+| 4 — Retrieval | Run symbol semantic_search + keyword baseline and file search_files; auto compute hit@1/3/5 from score-sorted results |
+| 5 — LSP matrix | Run LSP capability and navigation test set |
+| 7 — Report | Generate docs/benchmark-v<VER>.md and benchmark_results/benchmark_state.json |
+
+### What remains manual
+
+- Phase 6 bug triage write-up: summarize symptoms, root causes, and fixes in report findings.
+
+### Queries file format (Phase 4)
+
+```json
+[
+  {"type": "symbol", "query": "AI provider initialization", "expected": "ProviderBase"},
+  {"type": "symbol", "query": "error handling when AI call fails", "expected": "handleError"},
+  {"type": "file", "query": "chat state persistence", "expected": "chat-store.ts"}
+]
 ```
+
+Type defaults to symbol when omitted.
 
 ---
 
 ## Phase 0 — Pre-flight Checks
 
-> **These two checks must pass before any server is started. Abort if either fails.**
+Automated by scripts/run_benchmark.py.
 
-### 1. Kill existing server instance
-
-Port 6789 must be free. Always check and kill any existing process before starting:
-
-```powershell
-$p = Get-NetTCPConnection -LocalPort 6789 -ErrorAction SilentlyContinue
-if ($p) {
-    Stop-Process -Id $p.OwningProcess -Force
-    Write-Output "Killed PID $($p.OwningProcess) on port 6789"
-} else {
-    Write-Output "Port 6789 is free"
-}
-```
-
-Do this before **every** server start — both the full rebuild run and the incremental scenarios.
-
-### 2. Verify target repo has a config file
-
-codebase-insights requires a `.codebase-insights.toml` in the target directory (LLM + embedding config). If it doesn't exist, the server will either fail or run without AI features — **abort and set up the config first**:
-
-```powershell
-if (-not (Test-Path "G:\TargetRepo\.codebase-insights.toml")) {
-    Write-Error "ABORT: No .codebase-insights.toml found in target repo. Run the server manually once with --new-config to create it."
-    return
-}
-Write-Output "Config found: OK"
-```
-
-### 3. Environment capture
-
-After both checks pass, record:
-- codebase-insights version (`pip show codebase-insights`)
-- LLM provider + model (from `.codebase-insights.toml`)
-- Embedding model + provider
-- LSP servers installed (`typescript-language-server --version`, `clangd --version`)
-- Target repo: language breakdown, approx file count
-
----
+Key checks:
+- Port 6789 must be free before starting server
+- Target repo must contain .codebase-insights.toml
+- Capture environment metadata for report
 
 ## Phase 1 — Verify Instrumentation
 
-Confirm `[BENCHMARK:*]` markers are present in the source before running. Grep for the markers:
-
-```powershell
-Select-String -Path "src/codebase_insights/*.py" -Pattern "\[BENCHMARK:"
-```
+Automated by scripts/run_benchmark.py.
 
 Expected markers:
 
 | File | Markers |
 |---|---|
-| `main.py` | `[BENCHMARK:STARTUP]` |
-| `workspace_indexer.py` | `[BENCHMARK:INDEXER]` |
-| `semantic_indexer.py` | `[BENCHMARK:SEMANTIC]`, `[BENCHMARK:FILE_SUMMARIES]`, `[BENCHMARK:PROJECT_SUMMARY]`, `[BENCHMARK:SIZES]` |
-
-Also verify all BENCHMARK `print()` calls use `flush=True` — without it Python buffers stdout in piped mode and lines won't appear in the log until process exit:
-
-```powershell
-Select-String -Path "src/codebase_insights/*.py" -Pattern 'BENCHMARK.*flush=True'
-```
-
-If any markers are missing or lack `flush=True`, add them before proceeding.
+| main.py | [BENCHMARK:STARTUP] |
+| workspace_indexer.py | [BENCHMARK:INDEXER] |
+| semantic_indexer.py | [BENCHMARK:SEMANTIC], [BENCHMARK:FILE_SUMMARIES], [BENCHMARK:PROJECT_SUMMARY], [BENCHMARK:SIZES] |
 
 ---
 
 ## Phase 2 — Full Rebuild Execution
 
-### `scripts/benchmark_monitor.py`
-Verify the script exists before running:
+Automated by scripts/run_benchmark.py when --full-rebuild is set.
 
-```powershell
-Test-Path scripts/benchmark_monitor.py
-```
-
-If missing, it needs to be created. See the existing script for reference — it is a psutil-based wrapper that resolves `.venv/Scripts/codebase-insights.exe`, polls RSS every 0.5s, tees stdout, and writes `benchmark_results/full_rebuild.json` + `.log`.
-
-### Running it
-```powershell
-python scripts/benchmark_monitor.py "G:\TargetRepo\" --rebuild-index --rebuild-semantic
-```
+Internal helper scripts/benchmark_monitor.py is invoked by the orchestrator.
 
 ### Key metrics to extract
 | Benchmark line | Key metrics |
@@ -130,22 +122,13 @@ python scripts/benchmark_monitor.py "G:\TargetRepo\" --rebuild-index --rebuild-s
 
 ## Phase 3 — Incremental Update Scenarios
 
-**Before starting the server**: run the Phase 0 port check again (the full rebuild server must be stopped).
+Automated by scripts/run_benchmark.py.
 
-Start fresh server **without** rebuild flags:
-```powershell
-# Step 1: ensure port is free
-$p = Get-NetTCPConnection -LocalPort 6789 -EA SilentlyContinue
-if ($p) { Stop-Process -Id $p.OwningProcess -Force }
-
-# Step 2: start server (reuses existing index)
-.venv\Scripts\codebase-insights.exe "G:\TargetRepo\" 2>&1 | Tee-Object -FilePath "benchmark_results\server_incremental.log"
-```
+The runner handles server start/stop, marker waiting, scenario edits, and cleanup.
 
 Run four scenarios, recording `[BENCHMARK:*]` lines between each:
 
 ### Scenario A — No-change restart
-Just start the server and wait for initial pass to finish.
 - Expected: `INDEXER` shows `indexed=0 skipped=<total>`, `SEMANTIC` shows `summarised=0 skipped=<total>`
 - Key metric: total catch-up time should be **<1s**
 
@@ -165,18 +148,18 @@ Create a new `.ts` file with a class and a few functions.
 - Expected: same as Scenario C pipeline, but includes fresh LSP document-symbols pass
 - Key metric: end-to-end from file creation → PROJECT_SUMMARY complete
 
-### After each scenario
-```powershell
-Select-String -Path "benchmark_results\server_incremental.log" -Pattern "\[BENCHMARK:" | Select-Object -Last 10
-```
-
-> **Cleanup**: Revert/delete any test edits before moving to next scenario to prevent cross-contamination of project summary regeneration.
-
 ---
 
 ## Phase 4 — Retrieval Quality Testing
 
-The MCP server is already running — use `mcp_codebase-insi_*` tools directly in chat.
+Automated by scripts/run_benchmark.py when --queries-file is provided.
+
+Supported query types:
+- type=symbol: semantic_search plus keyword baseline query_symbols
+- type=file: search_files
+
+Returned result lists are sorted by score descending before scoring.
+hit@1, hit@3, and hit@5 are auto-computed and saved in benchmark_state.json.
 
 ### Query design
 Run ≥15 queries covering:
@@ -188,6 +171,7 @@ Run ≥15 queries covering:
 ### For each query
 ```
 mcp_codebase-insi_semantic_search(query="...", limit=5)
+mcp_codebase-insi_search_files(query="...", limit=5)
 ```
 Record: top result name + score, whether it's a genuine hit.
 
@@ -205,8 +189,6 @@ Compare: semantic vs keyword — do they find the same thing? Different things?
 | Hit@3 | Any of top-3 is correct |
 | Hit@5 | Any of top-5 is correct |
 
-A result is "correct" if it's the most directly relevant symbol for the query intent.
-
 ### Known failure modes
 - **Convention-based routing** (e.g. Expo Router, Next.js pages): no explicit symbol, can't be indexed
 - **Inline logic** (`try/catch` blocks, anonymous functions): filtered by `_ANON_NAME_RE`
@@ -216,7 +198,9 @@ A result is "correct" if it's the most directly relevant symbol for the query in
 
 ## Phase 5 — LSP Navigation Testing
 
-> **URI requirement**: TypeScript-language-server requires `file:///G:/...` format. Bare Windows paths (`G:\...`) return empty results silently. After the URI normalization fix in `mcp_server.py`, both formats work.
+Automated by scripts/run_benchmark.py.
+
+URI guidance remains relevant for manual debugging: prefer file:///G:/... format.
 
 ### Test matrix
 
@@ -260,7 +244,11 @@ Common bugs to watch for:
 
 ## Phase 7 — Report Compilation
 
-Structure the report as `benchmark-v<X.Y.Z>.md` in the repo root.
+Automated by scripts/run_benchmark.py (phase 7).
+
+Output files:
+- docs/benchmark-vX.Y.Z.md
+- benchmark_results/benchmark_state.json
 
 ### Required sections
 
@@ -301,7 +289,7 @@ Remove-Item -Recurse -Force benchmark_results\
 - [ ] All `[BENCHMARK:*]` lines flush to log in real time
 - [ ] `benchmark_results/full_rebuild.json` written
 - [ ] Scenarios A–D all have BENCHMARK data captured
-- [ ] ≥15 semantic queries run and scored
+- [ ] ≥15 retrieval queries run and auto-scored
 - [ ] LSP test matrix fully exercised (≥6 tool types)
 - [ ] Bugs found are documented with root cause + fix
 - [ ] Report written with all required sections
