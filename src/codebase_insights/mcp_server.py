@@ -571,6 +571,12 @@ def semantic_search(
 
     Note that the AI indexer will only perform indexing on symbols which had met certain criteria to be significant enough, so the result might not be complete. To know more about the criteria used for indexing, use the `get_indexer_criteria` tool.
 
+    Each result includes a `score` field: a hybrid relevance score combining
+    vector similarity and keyword matching (higher = better match).  Scores are
+    typically in the range 0–1, but can exceed 1 when the query contains the
+    symbol name verbatim (an explicit name-match multiplier is applied).
+    Results are returned sorted by score descending.
+
     Args:
         query:  Natural language description of what you are looking for.
         limit:  Maximum results to return (default 10, max 100).
@@ -594,8 +600,10 @@ def search_files(
     individual symbols.  For example, "file that handles authentication", "module
     responsible for database migrations", or "code that parses config files".
 
-    Each result includes the file path, its relative path, and a short summary of
-    its primary responsibility.
+    Each result includes the file path, its relative path, a short summary of
+    its primary responsibility, and a `score` field: a hybrid relevance score
+    combining vector similarity and filename keyword matching (higher = better
+    match, range 0–1).  Results are returned sorted by score descending.
 
     Args:
         query:  Natural language description of the kind of file you are looking for.

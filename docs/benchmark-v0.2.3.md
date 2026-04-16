@@ -125,8 +125,6 @@ Core file: `—`
 
 ## 8. Key Findings & Recommendations
 
-## 8. Key Findings & Recommendations
-
 | Priority | Finding | Recommendation |
 |:---:|---|---|
 | High | **Score field inversion fixed** (v0.2.3) | `score` now reflects adjusted hybrid similarity (higher = better); previous versions had inverted ranking | 
