@@ -29,6 +29,7 @@ from .workspace_indexer import _DB_FILENAME, SYMBOL_KIND_NAMES, canonical_path
 from .semantic_config import (
     semantic_index_kinds, semantic_concurrency, semantic_batch_size,
     semantic_min_ref_count, semantic_summary_update_threshold,
+    semantic_summary_file_idle_timeout, semantic_summary_project_idle_timeout,
     ranking_file_suffix_penalties, ranking_path_fragment_penalties,
     ranking_default_penalty,
     ranking_candidate_multiplier, ranking_ref_count_boost_weight,
@@ -369,9 +370,20 @@ class SemanticIndexer:
         self._project_summary_timer: threading.Timer | None = None
         self._project_summary_timer_lock = threading.Lock()
         self._summary_update_threshold = semantic_summary_update_threshold()
+        self._summary_file_idle_timeout = semantic_summary_file_idle_timeout()
+        self._summary_project_idle_timeout = semantic_summary_project_idle_timeout()
         # In-memory set of file paths whose summaries are pending regeneration.
         # Accumulated until _summary_update_threshold is reached, then flushed.
         self._pending_stale_paths: set[str] = set()
+        # Per-file idle timers: fire when a file has been stale for
+        # _summary_file_idle_timeout seconds without another edit.
+        self._file_idle_timers: dict[str, threading.Timer] = {}
+        self._file_idle_timers_lock = threading.Lock()
+        # Project-level idle timer: fires after _summary_project_idle_timeout
+        # seconds of inactivity (no new watchdog events) and regenerates all
+        # stale file summaries + the project summary.
+        self._project_idle_timer: threading.Timer | None = None
+        self._project_idle_timer_lock = threading.Lock()
 
         # Ranking config (loaded once at init, no global mutable state)
         self._suffix_penalties = ranking_file_suffix_penalties()
@@ -589,6 +601,140 @@ class SemanticIndexer:
             print(f"[Semantic] Error in debounced project summary: {e}")
 
     # ------------------------------------------------------------------
+    # Idle-timeout helpers
+    # ------------------------------------------------------------------
+
+    def _schedule_file_idle_summary(self, file_path: str, timeout: float) -> None:
+        """Schedule (or reset) auto-regeneration of a stale file summary after
+        *timeout* seconds of inactivity for that specific file.
+
+        Safe to call without holding ``self._lock``; must NOT be called from
+        inside ``self._lock`` to avoid lock-ordering deadlocks.
+        """
+        with self._file_idle_timers_lock:
+            existing = self._file_idle_timers.pop(file_path, None)
+            if existing is not None:
+                existing.cancel()
+            timer = threading.Timer(
+                timeout, self._run_file_idle_summary, args=(file_path,)
+            )
+            timer.daemon = True
+            timer.start()
+            self._file_idle_timers[file_path] = timer
+
+    def _cancel_file_idle_timer(self, file_path: str) -> None:
+        """Cancel the per-file idle timer for *file_path* if one is pending."""
+        with self._file_idle_timers_lock:
+            timer = self._file_idle_timers.pop(file_path, None)
+            if timer is not None:
+                timer.cancel()
+
+    def _cancel_all_file_idle_timers(self) -> None:
+        """Cancel all pending per-file idle timers.
+
+        Safe to call without ``self._lock`` — only acquires
+        ``_file_idle_timers_lock``.
+        """
+        with self._file_idle_timers_lock:
+            for timer in self._file_idle_timers.values():
+                timer.cancel()
+            self._file_idle_timers.clear()
+
+    def _run_file_idle_summary(self, file_path: str) -> None:
+        """Timer callback: regenerate the summary for one idle file.
+
+        Fires when the file has been stale for ``_summary_file_idle_timeout``
+        seconds without another structural change.
+        """
+        with self._file_idle_timers_lock:
+            self._file_idle_timers.pop(file_path, None)
+        # Quick check before acquiring the heavy lock — benign race
+        if file_path not in self._pending_stale_paths:
+            return
+        print(
+            f"[Semantic] File idle timeout: regenerating summary for {file_path}",
+            flush=True,
+        )
+        with self._lock:
+            try:
+                self._generate_file_summaries([file_path], force=True)
+            except Exception as e:
+                print(f"[Semantic] Error in file idle summary for {file_path}: {e}")
+        try:
+            self._schedule_project_summary(debounce=True)
+        except Exception as e:
+            print(f"[Semantic] Error scheduling project summary after file idle: {e}")
+
+    def _schedule_project_idle_summary(self, timeout: float) -> None:
+        """Schedule (or reset) the project-level idle regeneration timer.
+
+        Each call resets the countdown.  When it fires, all stale file summaries
+        and the project summary are regenerated in one batch.
+
+        Safe to call without ``self._lock``; must NOT be called from inside
+        ``self._lock`` to avoid lock-ordering deadlocks.
+        """
+        with self._project_idle_timer_lock:
+            if self._project_idle_timer is not None:
+                self._project_idle_timer.cancel()
+            timer = threading.Timer(timeout, self._run_project_idle_summary)
+            timer.daemon = True
+            timer.start()
+            self._project_idle_timer = timer
+        print(
+            f"[Semantic] Project idle summary scheduled in {timeout:.0f}s.",
+            flush=True,
+        )
+
+    def _cancel_project_idle_timer(self) -> None:
+        """Cancel the project-level idle timer if one is pending."""
+        with self._project_idle_timer_lock:
+            if self._project_idle_timer is not None:
+                self._project_idle_timer.cancel()
+                self._project_idle_timer = None
+
+    def _run_project_idle_summary(self) -> None:
+        """Timer callback: regenerate all stale file summaries + project summary.
+
+        Fires when the project has had no watchdog events for
+        ``_summary_project_idle_timeout`` seconds.
+        """
+        with self._project_idle_timer_lock:
+            self._project_idle_timer = None
+        # Cancel per-file idle timers — we are regenerating everything now.
+        # Acquire _file_idle_timers_lock BEFORE self._lock (lock-ordering rule).
+        self._cancel_all_file_idle_timers()
+        print(
+            "[Semantic] Project idle timeout: regenerating all stale summaries...",
+            flush=True,
+        )
+        with self._lock:
+            try:
+                stale_from_db: list[str] = []
+                try:
+                    con = sqlite3.connect(self._db_path, check_same_thread=False)
+                    con.row_factory = sqlite3.Row
+                    stale_from_db = [
+                        r[0] for r in con.execute(
+                            "SELECT file_path FROM file_summaries WHERE is_stale=1"
+                        ).fetchall()
+                    ]
+                    con.close()
+                except sqlite3.Error:
+                    pass
+                pending_paths = list(self._pending_stale_paths | set(stale_from_db))
+                if not pending_paths:
+                    print(
+                        "[Semantic] Project idle: no stale summaries found, skipping.",
+                        flush=True,
+                    )
+                    return
+                self._generate_file_summaries(pending_paths, force=True)
+                self._index_project_summary(force=True)
+            except Exception as e:
+                print(f"[Semantic] Error in project idle summary: {e}")
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -607,6 +753,9 @@ class SemanticIndexer:
         """
         with self._lock:
             try:
+                # Snapshot pending paths so we can detect newly-stale files after
+                # _generate_file_summaries returns (used for per-file idle timers).
+                pending_before = set(self._pending_stale_paths)
                 affected_files = self._do_index(symbol_ids)
                 # For file summaries we want ALL files that have any symbols, not
                 # just those whose symbols met the kind/ref_count eligibility criteria.
@@ -644,8 +793,14 @@ class SemanticIndexer:
                         unsummarised = []
                     self._generate_file_summaries(list(set(affected_files) | set(unsummarised)), force=False)
                 self._schedule_project_summary(debounce=debounce)
+                # Capture newly-stale files to schedule per-file idle timers after
+                # releasing the lock (scheduling inside the lock would risk deadlock).
+                newly_stale = list(self._pending_stale_paths - pending_before)
+                has_pending = bool(self._pending_stale_paths)
             except Exception as e:
                 print(f"[Semantic] Error during indexing: {e}")
+                newly_stale = []
+                has_pending = False
             # ── DB size snapshot ────────────────────────────────────────────
             try:
                 import pathlib
@@ -665,6 +820,13 @@ class SemanticIndexer:
             except Exception:
                 pass
 
+        # ── Schedule idle timers (outside self._lock to prevent deadlock) ───
+        if debounce and newly_stale and self._summary_file_idle_timeout > 0:
+            for fp in newly_stale:
+                self._schedule_file_idle_summary(fp, self._summary_file_idle_timeout)
+        if debounce and has_pending and self._summary_project_idle_timeout > 0:
+            self._schedule_project_idle_summary(self._summary_project_idle_timeout)
+
     def refresh_file_summary(self, file_path: str) -> dict:
         """Force-regenerate the AI summary for a single file, ignoring the change
         threshold.  The file's ``is_stale`` flag is cleared after a successful run.
@@ -674,6 +836,10 @@ class SemanticIndexer:
         norm = canonical_path(file_path)
         if not os.path.isabs(norm):
             norm = os.path.normpath(os.path.join(self._root_dir, norm))
+        # Cancel any pending idle timer for this file before acquiring self._lock
+        # (timer callbacks also try to acquire self._lock, so we must cancel first
+        # to avoid a join/cancel call inside the lock).
+        self._cancel_file_idle_timer(norm)
         # Mark stale so that force=True regenerates it regardless of hash match.
         try:
             con = sqlite3.connect(self._db_path, check_same_thread=False)
@@ -699,6 +865,9 @@ class SemanticIndexer:
 
         Returns a dict with ``"result"`` on success or ``"error"`` on failure.
         """
+        # Cancel all idle timers before acquiring self._lock to prevent deadlock.
+        self._cancel_all_file_idle_timers()
+        self._cancel_project_idle_timer()
         with self._lock:
             try:
                 # Re-generate all files with is_stale=1 or pending in memory

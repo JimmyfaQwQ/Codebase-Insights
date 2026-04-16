@@ -39,7 +39,7 @@ The project combines:
 | Semantic file search | `search_files(query)` finds files by responsibility or architecture role |
 | Stored summaries | Per-symbol, per-file, and project-level summaries |
 | Incremental maintenance | Skips unchanged files, watches for edits, updates changed content only |
-| Deferred summary updates | File/project summaries regenerate only after a configurable number of changes accumulate, keeping LLM costs low during active editing |
+| Deferred summary updates | File/project summaries regenerate only after a configurable number of changes accumulate, after a per-file idle window, or after a project-wide idle period — keeping LLM costs low during active editing |
 | MCP integration | Exposes the index and navigation tools over streamable HTTP |
 | Flexible model setup | Chat and embedding providers can be configured independently |
 
@@ -221,13 +221,19 @@ concurrency = 16
 batch_size = 16
 min_ref_count = 3
 summary_update_threshold = 5
+summary_file_idle_timeout = 30
+summary_project_idle_timeout = 300
 ```
 
-`summary_update_threshold` controls how many files must have their symbol structure change before file/project summaries are automatically regenerated during live editing (watchdog updates):
+The three `summary_*` settings together control when stale summaries are regenerated:
 
-- `1` — regenerate on every single change (original behaviour)
-- `5` (default) — accumulate 5 structurally-changed files before triggering a batch regeneration
-- `0` — disable auto-regeneration entirely; use the `refresh_file_summary` / `refresh_project_summary` MCP tools explicitly
+| Setting | Default | Meaning |
+|---|---|---|
+| `summary_update_threshold` | `5` | Regenerate once this many files have accumulated stale summaries |
+| `summary_file_idle_timeout` | `30` | Regenerate a file's summary after it has been idle for this many seconds |
+| `summary_project_idle_timeout` | `300` | Regenerate all stale summaries + project summary after the whole project has been idle for this many seconds |
+
+Set any of these to `0` to disable that trigger. The MCP `refresh_file_summary` / `refresh_project_summary` tools always perform an immediate forced regeneration regardless of these settings.
 
 ### API key precedence
 

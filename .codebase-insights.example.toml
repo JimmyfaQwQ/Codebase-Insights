@@ -44,3 +44,11 @@ summary_update_threshold = 5  # number of files that must change before file/pro
                                # Set to 1 to regenerate on every change, 0 to disable auto-regen.
                                # Use the refresh_file_summary / refresh_project_summary MCP tools
                                # to force an immediate update at any time.
+
+summary_file_idle_timeout = 30    # seconds a file must be idle (no further symbol changes) before
+                                  # its stale summary is auto-regenerated, regardless of the threshold.
+                                  # Set to 0 to disable per-file idle regeneration.
+
+summary_project_idle_timeout = 300  # seconds the whole project must be idle (no watchdog events)
+                                    # before all stale file summaries and the project summary are
+                                    # regenerated in one batch.  Set to 0 to disable.

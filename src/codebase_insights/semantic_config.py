@@ -62,6 +62,13 @@ _DEFAULT_CONFIG: dict = {
         # Set to 1 to regenerate on every single change (original behaviour).
         # Set to 0 to disable auto-regeneration entirely (use MCP refresh tools).
         "summary_update_threshold": 5,
+        # Seconds a single file must be idle (no further symbol changes) before
+        # its stale summary is automatically regenerated.  0 = disabled.
+        "summary_file_idle_timeout": 30,
+        # Seconds the whole project must be idle (no watchdog events at all)
+        # before all stale file summaries and the project summary are regenerated.
+        # 0 = disabled.
+        "summary_project_idle_timeout": 300,
     },
     "ranking": {
         "default_penalty": 1.0,
@@ -260,6 +267,20 @@ def semantic_summary_update_threshold() -> int:
     N = accumulate N changes before regenerating (default: 5)
     """
     return int(get_config().get("semantic", {}).get("summary_update_threshold", 5))
+
+
+def semantic_summary_file_idle_timeout() -> int:
+    """Return seconds a file must be idle (no further symbol changes) before
+    its stale summary is automatically regenerated.  0 = disabled (default: 30).
+    """
+    return int(get_config().get("semantic", {}).get("summary_file_idle_timeout", 30))
+
+
+def semantic_summary_project_idle_timeout() -> int:
+    """Return seconds the project must be idle (no watchdog events at all)
+    before all stale summaries are regenerated.  0 = disabled (default: 300).
+    """
+    return int(get_config().get("semantic", {}).get("summary_project_idle_timeout", 300))
 
 
 # ---------------------------------------------------------------------------
