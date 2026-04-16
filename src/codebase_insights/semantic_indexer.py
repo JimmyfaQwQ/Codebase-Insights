@@ -1777,7 +1777,10 @@ class SemanticIndexer:
         con.commit()
         self._bm_t_sqlite += time.perf_counter() - _bm_sqlite_s
 
-        return len(ok_syms), errors + (len(symbols) - len(valid_syms))
+        # pre_errors: context-extraction failures (real errors).
+        # Hash-matched symbols are accounted for as "skipped" by the caller
+        # (skipped = len(batch) - ok - err), not as errors.
+        return len(ok_syms), errors + pre_errors
 
     # ------------------------------------------------------------------
     # Internal: context extraction

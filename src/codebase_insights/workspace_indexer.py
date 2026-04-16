@@ -433,6 +433,27 @@ class WorkspaceIndexer:
         if self._get_stored_hash(con, file_path) == current_hash:
             return _IndexResult.SKIPPED
 
+        # Save existing symbol summaries before deletion so they can be
+        # re-attached to the newly-inserted symbol IDs after re-indexing.
+        # Key: (name, kind_label, container_name) → (symbol_hash, summary, chroma_id)
+        # This preserves incremental-update performance: _process_batch will
+        # compare symbol_hash against the current code slice and skip symbols
+        # whose code hasn't changed, avoiding redundant LLM calls.
+        old_summaries: dict[tuple[str, str, str | None], tuple[str, str, str]] = {}
+        try:
+            for row in con.execute(
+                """SELECT s.name, s.kind_label, s.container_name,
+                          ss.symbol_hash, ss.summary, ss.chroma_id
+                   FROM symbols s
+                   JOIN symbol_summaries ss ON ss.symbol_id = s.id
+                   WHERE s.file_path = ?""",
+                (file_path,),
+            ).fetchall():
+                key: tuple[str, str, str | None] = (row[0], row[1], row[2])
+                old_summaries[key] = (row[3], row[4], row[5])
+        except Exception:
+            pass  # symbol_summaries may not exist on first run
+
         # Remove stale entries before re-indexing
         self._remove_file(con, file_path)
 
@@ -452,6 +473,9 @@ class WorkspaceIndexer:
         # avoiding minutes of pointless timeouts per file.
         collect_refs = client.references_reliable
 
+        # Track new symbol IDs so we can restore matching old summaries below.
+        new_sym_ids: list[tuple[tuple[str, str, str | None], int]] = []
+
         for sym in flat_symbols:
             con.execute(
                 """INSERT INTO symbols
@@ -464,6 +488,7 @@ class WorkspaceIndexer:
                 ),
             )
             sym_id = con.execute("SELECT last_insert_rowid()").fetchone()[0]
+            new_sym_ids.append(((sym["name"], sym["kind_label"], sym["container_name"]), sym_id))
 
             if not collect_refs:
                 continue
@@ -485,6 +510,25 @@ class WorkspaceIndexer:
                         for ref in refs_result.result
                     ],
                 )
+
+        # Re-attach old summaries to matching new symbol IDs.  _process_batch
+        # will later compare the stored symbol_hash against the current code
+        # slice; unchanged symbols will be skipped (no LLM call needed).
+        if old_summaries:
+            restore_rows = []
+            for key, new_id in new_sym_ids:
+                if key in old_summaries:
+                    sym_hash, summary, chroma_id = old_summaries[key]
+                    restore_rows.append((new_id, sym_hash, summary, chroma_id))
+            if restore_rows:
+                try:
+                    con.executemany(
+                        "INSERT OR IGNORE INTO symbol_summaries"
+                        "(symbol_id, symbol_hash, summary, chroma_id) VALUES(?,?,?,?)",
+                        restore_rows,
+                    )
+                except Exception:
+                    pass  # symbol_summaries table not yet initialised
 
         self._upsert_hash(con, file_path, current_hash)
         con.commit()
