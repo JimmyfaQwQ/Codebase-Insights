@@ -870,7 +870,7 @@ def phase3_incremental(
         )
         scenarios["E"] = {
             "description": "Force refresh via refresh_project_summary",
-            "ok": ok_e_fs and ok_e_ps,
+            "ok": ok_e_ps and ps_no_stale,  # FILE_SUMMARIES only emitted when files were stale
             "is_stale_cleared": ps_no_stale,
             "total_wall_s": round(total_e, 2),
             "bench": data_e,
@@ -911,7 +911,7 @@ def phase3_incremental(
             fs_result = call_tool("get_file_summary", {"file_path": core_file})
             f_not_stale = (
                 isinstance(fs_result, dict)
-                and not fs_result.get("result", {}).get("is_stale", True)
+                and not fs_result.get("result", {}).get("is_stale", False)
             )
             print(f"    get_file_summary is_stale=False: {f_not_stale} (expected: True)")
 

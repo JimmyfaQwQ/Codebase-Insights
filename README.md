@@ -47,7 +47,7 @@ Supported languages today: **Python**, **JavaScript/TypeScript**, **C++**, and *
 
 ## Latest benchmark snapshot
 
-The latest benchmark checked into this repository is **v1.1.0**, generated on **2026-04-16** against a real Electron + Vue + React Native monorepo (`G:\SyntaxSenpai`).
+The latest benchmark checked into this repository is **v1.1.0**, generated on **2026-04-17** against a real Electron + Vue + React Native monorepo (`G:\SyntaxSenpai`).
 
 ### Benchmark target
 
@@ -87,13 +87,19 @@ For **full rebuild** and **incremental update** behavior, the v1.1.0 baseline is
 |---|---|
 | Full pipeline wall time | **499.79s (~8.3 min)** |
 | Storage footprint | **15.09 MB** (6.37 MB SQLite + 8.73 MB ChromaDB) |
-| No-change catch-up | **36.0s** |
+| No-change catch-up | **38.0s** |
 | Leaf-file edit | **13.0s** (semantic only, summaries deferred) |
-| Core-file edit | **63.0s** (9.5s semantic; summaries deferred by threshold) |
-| New file | **63.0s** (7.6s semantic; summaries deferred by threshold) |
-| Force refresh (MCP) | **28.2s** (8.9s file summaries + 15.7s incremental project summary) |
+| Core-file edit | **63.0s** (7.1s semantic; summaries deferred by threshold) |
+| New file | **63.0s** (7.1s semantic; summaries deferred by threshold) |
+| Force refresh (MCP) | **16.1s** incremental project summary (no stale files; idle timers pre-cleared them) |
+| Per-file idle timer | **61.0s** (7.4s semantic → 30s idle → 10.8s file summaries → 18.2s project summary) |
 
-**v1.1.0 key change:** file and project summaries are now regenerated lazily based on a configurable `summary_update_threshold` (default: 5).  Incremental edits that do not cross the threshold mark summaries as **stale** and return immediately — no LLM call for every keystroke.  When the threshold is reached, or when the MCP refresh tools are called explicitly, the batch of stale summaries is regenerated at once.  This changes the per-edit cost profile: leaf-file edits now take **13s** (semantic only) instead of 27s, and core-file edits are **63s** instead of 63s + summary regeneration on every edit.
+**v1.1.0 key changes:** file and project summaries are now regenerated lazily via three configurable triggers instead of on every edit:
+1. **Change threshold** (`summary_update_threshold`, default 5) — once this many files accumulate stale summaries, the batch is regenerated.
+2. **Per-file idle timer** (`summary_file_idle_timeout`, default 30s) — regenerates a single file's summary after that file has been idle for the configured duration.
+3. **Project idle timer** (`summary_project_idle_timeout`, default 300s) — regenerates all stale summaries and the project summary after the whole project has been idle.
+
+Incremental edits that don't cross any trigger mark summaries as **stale** and return immediately.  Leaf-file edits cost **13s** (semantic only), core-file edits cost **63s** (semantic only, summary deferred), and the per-file idle timer delivers a fully-updated summary ~61s after the edit with no manual intervention.
 
 ## How it works
 

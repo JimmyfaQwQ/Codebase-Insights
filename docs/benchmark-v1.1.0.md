@@ -1,6 +1,6 @@
 # Benchmark Report — Codebase Insights v1.1.0
 
-**Date:** 2026-04-16  
+**Date:** 2026-04-17  
 **Target repository:** `G:\SyntaxSenpai`  
 **Executed by:** automated benchmark pipeline (`scripts/run_benchmark.py`)
 
@@ -10,7 +10,7 @@
 
 - **Full pipeline time:** **499.79s**
 - **Peak RSS:** **2844.5 MiB**
-- **No-change catch-up:** 36.02s  (indexed=0, skipped=118)
+- **No-change catch-up:** 38.02s  (indexed=0, skipped=118)
 - **Storage footprint:** 6.37 MB SQLite + 8.72 MB ChromaDB
 
 ---
@@ -85,45 +85,56 @@ All `[BENCHMARK:*]` markers present: **✓ YES**
 
 ## 4. Incremental Update Scenarios
 
-Leaf file: `G:\SyntaxSenpai\apps\mobile\tailwind.config.ts`  
+Leaf file: `G:\SyntaxSenpai\apps\desktop\src\renderer\src\main.ts`  
 Core file: `G:\SyntaxSenpai\apps\mobile\src\hooks\useTheme.ts`
 
 | Scenario | Watchdog+LSP | Semantic | File Summaries | Proj Summary | Total | Notes |
 |---|---|---|---|---|---|---|
-| A: No-change restart | 2.56s | 0.10s | — | 14.11s | 36.02s | — |
-| B: Leaf file edit (tailwind.config.ts) | — | 6.55s | — | — | 13.0s | — |
-| C: Core file edit (useTheme.ts) | — | 9.54s | — | 13.16s | 63.02s | — |
-| D: New file added | — | 7.56s | — | — | 63.01s | is_stale=True |
-| E: Force refresh via refresh_project_summary | — | — | 8.93s | 15.74s | 28.17s | stale_cleared=True |
+| A: No-change restart | 0.04s | 7.06s | 8.16s | 15.65s | 38.02s | — |
+| B: Leaf file edit (main.ts) | — | 7.34s | — | — | 13.0s | — |
+| C: Core file edit (useTheme.ts) | — | 7.08s | 9.01s | — | 63.02s | — |
+| D: New file added | — | 7.08s | 8.35s | 15.60s | 63.02s | is_stale=False |
+| E: Force refresh via refresh_project_summary | — | — | — | 16.08s | 319.47s | stale_cleared=True |
+| F: Per-file idle timer (30s) | — | 7.41s | 10.82s | 18.16s | 61.01s | idle_fs=True, idle_ps=True, stale_cleared=True |
+| G: Project idle timer | — | — | — | — | — | skipped |
 
 ### Per-scenario BENCHMARK lines
 
 #### Scenario A: No-change restart
-- `[BENCHMARK:STARTUP]` `lsp_cpp_start_server=0.020s`  `lsp_cpp_initialize=0.379s`  `lsp_javascript/typescript_start_server=0.020s`  `lsp_javascript/typescript_initialize=0.790s`
-- `[BENCHMARK:INDEXER]` `wall_time=2.56s`  `files_total=118`  `indexed=0`  `skipped=118`  `errors=0`  `total_symbols=5593`  `total_refs=31792`
-- `[BENCHMARK:SEMANTIC]` `wall_time=0.10s`  `pending_query=0.039s`  `context_extract=0.04s`  `llm_batch=0.00s`  `chroma_insert=0.00s`  `sqlite_write=0.00s`  `symbols_total=532`  `summarised=0`  `skipped=532`  `errors=0`  `input_tokens=0`  `output_tokens=0`
-- `[BENCHMARK:PROJECT_SUMMARY]` `wall_time=14.11s`  `mode=full`
-- `[BENCHMARK:SIZES]` `sqlite_bytes=6676480`  `chroma_bytes=9151448`  `sqlite_mb=6.37`  `chroma_mb=8.73`
+- `[BENCHMARK:STARTUP]` `lsp_javascript/typescript_start_server=0.018s`  `lsp_javascript/typescript_initialize=0.294s`  `lsp_cpp_start_server=0.011s`  `lsp_cpp_initialize=0.177s`
+- `[BENCHMARK:INDEXER]` `wall_time=0.04s`  `files_total=118`  `indexed=0`  `skipped=118`  `errors=0`  `total_symbols=5594`  `total_refs=31793`
+- `[BENCHMARK:SEMANTIC]` `wall_time=7.06s`  `pending_query=0.017s`  `context_extract=0.03s`  `llm_batch=2.91s`  `chroma_insert=0.00s`  `sqlite_write=0.00s`  `symbols_total=533`  `summarised=0`  `skipped=532`  `errors=1`  `input_tokens=96`  `output_tokens=42`
+- `[BENCHMARK:FILE_SUMMARIES]` `wall_time=8.16s`  `files_pending=1`
+- `[BENCHMARK:PROJECT_SUMMARY]` `wall_time=15.65s`  `mode=incremental`  `changes=1`
+- `[BENCHMARK:SIZES]` `sqlite_bytes=6676480`  `chroma_bytes=9155544`  `sqlite_mb=6.37`  `chroma_mb=8.73`
 
-#### Scenario B: Leaf file edit (tailwind.config.ts)
-File: `G:\SyntaxSenpai\apps\mobile\tailwind.config.ts`  
-- `[BENCHMARK:SEMANTIC]` `wall_time=6.55s`  `pending_query=0.038s`  `context_extract=0.00s`  `llm_batch=2.43s`  `chroma_insert=0.00s`  `sqlite_write=0.00s`  `symbols_total=1`  `summarised=0`  `skipped=0`  `errors=1`  `input_tokens=116`  `output_tokens=27`
-- `[BENCHMARK:SIZES]` `sqlite_bytes=6676480`  `chroma_bytes=9151448`  `sqlite_mb=6.37`  `chroma_mb=8.73`
+#### Scenario B: Leaf file edit (main.ts)
+File: `G:\SyntaxSenpai\apps\desktop\src\renderer\src\main.ts`  
+- `[BENCHMARK:SEMANTIC]` `wall_time=7.34s`  `pending_query=0.021s`  `context_extract=0.14s`  `llm_batch=3.10s`  `chroma_insert=0.00s`  `sqlite_write=0.00s`  `symbols_total=2`  `summarised=0`  `skipped=0`  `errors=2`  `input_tokens=218`  `output_tokens=86`
+- `[BENCHMARK:SIZES]` `sqlite_bytes=6676480`  `chroma_bytes=9155544`  `sqlite_mb=6.37`  `chroma_mb=8.73`
 
 #### Scenario C: Core file edit (useTheme.ts)
 File: `G:\SyntaxSenpai\apps\mobile\src\hooks\useTheme.ts`  
-- `[BENCHMARK:SEMANTIC]` `wall_time=9.54s`  `pending_query=0.028s`  `context_extract=2.42s`  `llm_batch=3.01s`  `chroma_insert=0.00s`  `sqlite_write=0.00s`  `symbols_total=8`  `summarised=0`  `skipped=6`  `errors=2`  `input_tokens=215`  `output_tokens=76`
-- `[BENCHMARK:PROJECT_SUMMARY]` `wall_time=13.16s`  `mode=incremental`  `changes=2`
+- `[BENCHMARK:SEMANTIC]` `wall_time=7.08s`  `pending_query=0.018s`  `context_extract=0.08s`  `llm_batch=2.90s`  `chroma_insert=0.00s`  `sqlite_write=0.00s`  `symbols_total=8`  `summarised=0`  `skipped=6`  `errors=2`  `input_tokens=215`  `output_tokens=76`
+- `[BENCHMARK:FILE_SUMMARIES]` `wall_time=9.01s`  `files_pending=1`
 - `[BENCHMARK:SIZES]` `sqlite_bytes=6676480`  `chroma_bytes=9155544`  `sqlite_mb=6.37`  `chroma_mb=8.73`
 
 #### Scenario D: New file added
 File: `_bench_auto_scenario_d.ts`  
-- `[BENCHMARK:SEMANTIC]` `wall_time=7.56s`  `pending_query=0.032s`  `context_extract=0.00s`  `llm_batch=3.45s`  `chroma_insert=0.00s`  `sqlite_write=0.00s`  `symbols_total=5`  `summarised=0`  `skipped=0`  `errors=5`  `input_tokens=608`  `output_tokens=210`
+- `[BENCHMARK:SEMANTIC]` `wall_time=7.08s`  `pending_query=0.014s`  `context_extract=0.00s`  `llm_batch=2.98s`  `chroma_insert=0.00s`  `sqlite_write=0.00s`  `symbols_total=5`  `summarised=0`  `skipped=0`  `errors=5`  `input_tokens=608`  `output_tokens=199`
+- `[BENCHMARK:FILE_SUMMARIES]` `wall_time=8.35s`  `files_pending=1`
+- `[BENCHMARK:PROJECT_SUMMARY]` `wall_time=15.60s`  `mode=incremental`  `changes=1`
 - `[BENCHMARK:SIZES]` `sqlite_bytes=6676480`  `chroma_bytes=9155544`  `sqlite_mb=6.37`  `chroma_mb=8.73`
 
 #### Scenario E: Force refresh via refresh_project_summary
-- `[BENCHMARK:FILE_SUMMARIES]` `wall_time=8.93s`  `files_pending=2`
-- `[BENCHMARK:PROJECT_SUMMARY]` `wall_time=15.74s`  `mode=incremental`  `changes=2`
+- `[BENCHMARK:PROJECT_SUMMARY]` `wall_time=16.08s`  `mode=incremental`  `changes=2`
+
+#### Scenario F: Per-file idle timer (30s)
+File: `G:\SyntaxSenpai\apps\mobile\src\hooks\useTheme.ts`  
+- `[BENCHMARK:SEMANTIC]` `wall_time=7.41s`  `pending_query=0.020s`  `context_extract=0.06s`  `llm_batch=3.24s`  `chroma_insert=0.00s`  `sqlite_write=0.00s`  `symbols_total=8`  `summarised=0`  `skipped=6`  `errors=2`  `input_tokens=215`  `output_tokens=72`
+- `[BENCHMARK:FILE_SUMMARIES]` `wall_time=10.82s`  `files_pending=1`
+- `[BENCHMARK:PROJECT_SUMMARY]` `wall_time=18.16s`  `mode=incremental`  `changes=1`
+- `[BENCHMARK:SIZES]` `sqlite_bytes=6676480`  `chroma_bytes=9155544`  `sqlite_mb=6.37`  `chroma_mb=8.73`
 
 ---
 
@@ -223,6 +234,8 @@ _Add observations, bugs found, and prioritised recommendations here._
 - [ ] Port 6789 confirmed free before every server start
 - [ ] All `[BENCHMARK:*]` markers flush to log in real time
 - [ ] Scenarios A–E all have BENCHMARK data captured
+- [ ] Scenario F (per-file idle) verified: FILE_SUMMARIES fired after idle timeout
+- [ ] Scenario G (project idle) verified if --project-idle-timeout was passed
 - [ ] LSP test matrix fully exercised
 - [ ] Retrieval quality queries scored (if Phase 4 was run)
 - [ ] Bugs found are documented with root cause + fix
