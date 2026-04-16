@@ -926,8 +926,10 @@ class SemanticIndexer:
         # Final sort by adjusted score
         final.sort(key=lambda x: x["_adjusted"], reverse=True)
 
-        # Clean up internal fields
+        # Promote the adjusted hybrid similarity as the public `score` (higher = better),
+        # replacing the raw L2 distance that was set during initial scoring.
         for item in final:
+            item["score"] = round(item["_adjusted"], 4)
             item.pop("_hybrid", None)
             item.pop("_adjusted", None)
             item.pop("_file_path", None)
@@ -985,7 +987,7 @@ class SemanticIndexer:
                 "file":     file_path,
                 "rel_path": rel_path,
                 "summary":  summary,
-                "score":    round(float(distance), 4),
+                "score":    round(hybrid, 4),
                 "_hybrid":  hybrid,
             })
 
