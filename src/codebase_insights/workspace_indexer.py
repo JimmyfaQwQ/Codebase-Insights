@@ -399,6 +399,9 @@ class WorkspaceIndexer:
         """Delete all indexed data for a file (symbols cascade-delete their refs)."""
         con.execute("DELETE FROM symbols WHERE file_path=?", (file_path,))
         con.execute("DELETE FROM file_hashes WHERE file_path=?", (file_path,))
+        # Also remove the file summary so the project summary hash changes and
+        # triggers a project summary update when the file disappears.
+        con.execute("DELETE FROM file_summaries WHERE file_path=?", (file_path,))
         con.commit()
 
     # ------------------------------------------------------------------

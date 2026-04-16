@@ -314,30 +314,28 @@ _FILE_SYSTEM_PROMPT = (
 
 _PROJECT_SYSTEM_PROMPT = (
     "You are a software architect. Given a list of source files and their summaries, "
-    "produce a structured overview of the codebase. Your response MUST contain exactly these "
-    "four sections with these headings:\n"
+    "produce a concise, high-level overview of the codebase. "
+    "Your response MUST contain exactly these three sections with these headings:\n"
     "## Architecture Overview\n"
-    "2-3 sentences describing the overall system purpose and design.\n"
-    "## File Responsibilities\n"
-    "A bullet list: one line per file in the format `filename: responsibility`.\n"
+    "3-5 sentences describing the overall system purpose, major components, and design approach. "
+    "Do NOT list every file — focus on the architecture.\n"
     "## Data Flow\n"
-    "A short prose description of how data moves through the system end-to-end.\n"
+    "2-4 sentences describing how data moves through the system end-to-end.\n"
     "## Extension Points\n"
-    "A bullet list: `To do X → edit Y (function/class Z)` for the most common change scenarios."
+    "Up to 5 bullet points: `To do X → edit Y` for the most common change scenarios.\n"
+    "Keep the total response under 400 words."
 )
 
 _INCREMENTAL_PROJECT_SYSTEM_PROMPT = (
     "You are a software architect. You are given the current project summary and a list of "
     "file-level changes (new, updated, or removed files with their summaries). "
     "Update the project summary to reflect these changes. "
-    "Keep the same four-section structure:\n"
+    "Keep the same three-section structure:\n"
     "## Architecture Overview\n"
-    "## File Responsibilities\n"
     "## Data Flow\n"
     "## Extension Points\n"
     "Make minimal, targeted edits — only modify sections affected by the changes. "
-    "If a file was removed, remove it from File Responsibilities and adjust other sections if needed. "
-    "If a file was added or updated, update the relevant sections accordingly."
+    "Keep the total response under 400 words."
 )
 
 

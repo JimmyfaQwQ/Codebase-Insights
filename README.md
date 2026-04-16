@@ -46,15 +46,15 @@ Supported languages today: **Python**, **JavaScript/TypeScript**, **C++**, and *
 
 ## Latest benchmark snapshot
 
-The latest benchmark checked into this repository is **v1.0.0**, generated on **2026-04-16** against a real Electron + Vue + React Native monorepo (`G:\SyntaxSenpai`).
+The latest benchmark checked into this repository is **v1.0.1**, generated on **2026-04-16** against a real Electron + Vue + React Native monorepo (`G:\SyntaxSenpai`).
 
 ### Benchmark target
 
 | Metric | Value |
 |---|---:|
-| Files processed | 90 |
-| Symbols | 5,595 |
-| Cross-references | 31,195 |
+| Files processed | 89 |
+| Symbols | 5,592 |
+| Cross-references | 31,791 |
 
 ### Retrieval quality
 
@@ -76,22 +76,22 @@ Key takeaways from the latest run:
 
 This matters because Codebase Insights is trying to solve the exact case where the caller knows **what the code does**, but not **what the symbol is named**.
 
-The latest checked-in benchmark report is [docs/benchmark-v1.0.0.md](docs/benchmark-v1.0.0.md). Historical benchmark reports are also kept under [docs/](docs).
+The latest checked-in benchmark report is [docs/benchmark-v1.0.1.md](docs/benchmark-v1.0.1.md). Historical benchmark reports are also kept under [docs/](docs).
 
 ### Performance baseline
 
-For **full rebuild** and **incremental update** behavior, the v1.0.0 baseline is:
+For **full rebuild** and **incremental update** behavior, the v1.0.1 baseline is:
 
 | Metric | Result |
 |---|---|
 | Full pipeline wall time | **499.79s (~8.3 min)** |
 | Storage footprint | **15.09 MB** (6.37 MB SQLite + 8.72 MB ChromaDB) |
-| No-change catch-up | **8.02s** |
-| Leaf-file edit | **9.0s** |
-| Core-file edit | **179.27s** (3.69s semantic + 136.47s incremental project summary) |
-| New file | **~157s** (1 symbol summarized + incremental project summary) |
+| No-change catch-up | **30.2s** |
+| Leaf-file edit | **27.2s** |
+| Core-file edit | **63.2s** (3.65s semantic + 7.0s file summary + 14.4s incremental project summary) |
+| New file | **67.0s** (3.9s semantic + 3.9s file summary + 16.4s incremental project summary) |
 
-The core-file edit figure reflects the v1.0.0 incremental summary fix: only **1 of 7** symbols in the edited file was re-summarized; the remaining 6 were carried over from the previous index pass because their source hadn't changed. Prior to v1.0.0 all symbols in a re-indexed file were re-summarized on every watchdog event.
+The v1.0.1 project summary fix reduces per-update LLM output from ~14 KB to ~2 KB by removing the redundant per-file bullet list from the project summary prompt. Incremental project summary now takes **~15–20s** instead of ~136s. Core-file edit dropped from **~179s to 63s** and new-file addition from **~157s to 67s**, both now completing end-to-end in under 70 seconds.
 
 ## How it works
 
@@ -331,7 +331,7 @@ That gives agents both **semantic recall** and **structural precision**.
 
 ## Related benchmark material
 
-- Latest benchmark report: [docs/benchmark-v1.0.0.md](docs/benchmark-v1.0.0.md)
+- Latest benchmark report: [docs/benchmark-v1.0.1.md](docs/benchmark-v1.0.1.md)
 - Earlier reports: [docs/](docs)
 - Benchmark runner: [scripts/run_benchmark.py](scripts/run_benchmark.py)
 

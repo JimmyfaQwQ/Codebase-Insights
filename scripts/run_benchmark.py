@@ -209,6 +209,17 @@ class ServerProcess:
         with self._lock:
             return [l for l in self._lines[start_idx:] if l.startswith(_BENCH_PREFIX)]
 
+    def wait_for_log_line(self, pattern: str, start_idx: int = 0, timeout: float = 15.0) -> bool:
+        """Block until *pattern* appears in any log line after *start_idx*."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._lock:
+                lines = self._lines[start_idx:]
+            if any(pattern in l for l in lines):
+                return True
+            time.sleep(0.5)
+        return False
+
     def wait_for_marker(self, marker: str, start_idx: int = 0, timeout: float = 300.0) -> tuple[bool, list[str]]:
         """Block until ``[BENCHMARK:<marker>]`` appears after *start_idx*."""
         tag = f"[BENCHMARK:{marker}]"
@@ -393,6 +404,30 @@ def _revert_file(file_path: str, appended: str) -> None:
             and "_bench_test_" not in l
         ]
         Path(file_path).write_text("".join(cleaned), encoding="utf-8")
+
+
+def _cleanup_stale_bench_entries(db_path: str) -> None:
+    """Remove any leftover _bench_auto_* entries from the DB before Phase 3 starts.
+
+    If the benchmark server was killed while a test file was still tracked in the DB
+    (e.g. after a timeout), the stale file_hashes / file_summaries entries would
+    cause the indexer to skip the file on recreation (hash unchanged).  This
+    function wipes those entries so Scenario D always starts from a clean state.
+    """
+    if not os.path.isfile(db_path):
+        return
+    try:
+        con = sqlite3.connect(db_path)
+        tables = [r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()]
+        for table in ("file_hashes", "file_summaries", "project_summary_sources", "symbols"):
+            if table in tables:
+                con.execute(f"DELETE FROM {table} WHERE file_path LIKE '%_bench_auto_%'")
+        con.commit()
+        con.close()
+    except Exception:
+        pass
 
 
 def _create_test_file(target_repo: str) -> str:
@@ -679,6 +714,10 @@ def phase3_incremental(
         state["incremental"] = {"skipped": True, "reason": "no indexed files in DB"}
         return
 
+    # Remove any leftover _bench_auto_* rows from previous (possibly interrupted) runs
+    # BEFORE the server starts so it doesn't see a stale file hash and skip indexing.
+    _cleanup_stale_bench_entries(db)
+
     msg = kill_port(MCP_PORT)
     print(f"  Port check: {msg}")
 
@@ -785,6 +824,12 @@ def phase3_incremental(
         try:
             os.remove(new_file)
             print(f"    Removed: {os.path.basename(new_file)}")
+            # Wait for the watchdog to process the deletion so file_hashes and
+            # file_summaries are cleaned up before the server stops.  This prevents
+            # stale DB entries from causing the file to be skipped on the next run.
+            removed_marker = f"[Indexer] Removed: {new_file}"
+            if not server.wait_for_log_line(removed_marker, start_d, timeout=10):
+                time.sleep(3)  # fallback: give the watchdog a moment
         except OSError as exc:
             print(f"    WARNING: could not remove test file: {exc}")
 
