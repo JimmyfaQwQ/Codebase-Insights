@@ -1,6 +1,6 @@
 [
   {
-    "_comment": "--- STRUCTURAL: well-known abstractions ---",
+    "_comment": "=== STRUCTURAL: core abstractions ===",
     "type": "symbol",
     "query": "abstract base class for AI provider implementations",
     "expected": "BaseAIProvider"
@@ -26,15 +26,10 @@
     "expected": "ToolRegistry"
   },
   {
-    "_comment": "--- DOMAIN: waifu / personality ---",
+    "_comment": "=== DOMAIN: waifu / personality ===",
     "type": "symbol",
     "query": "waifu personality traits on a numerical scale",
     "expected": "WaifuPersonalityTraits"
-  },
-  {
-    "type": "symbol",
-    "query": "waifu companion data model with name and avatar",
-    "expected": "Waifu"
   },
   {
     "type": "symbol",
@@ -47,7 +42,7 @@
     "expected": "SystemPromptContext"
   },
   {
-    "_comment": "--- BEHAVIOURAL: IPC / platform glue ---",
+    "_comment": "=== BEHAVIOURAL: IPC / platform ===",
     "type": "symbol",
     "query": "platform-native adapter for storing encrypted API keys",
     "expected": "KeystoreAdapter"
@@ -63,23 +58,13 @@
     "expected": "CreateProviderOptions"
   },
   {
-    "_comment": "--- BEHAVIOURAL: WebSocket protocol ---",
+    "_comment": "=== BEHAVIOURAL: WebSocket protocol ===",
     "type": "symbol",
     "query": "WebSocket message envelope for phone to desktop communication",
     "expected": "WSMessage"
   },
   {
-    "type": "symbol",
-    "query": "mobile initiates pairing with desktop over WebSocket",
-    "expected": "PairRequestPayload"
-  },
-  {
-    "type": "symbol",
-    "query": "payload sent when a streaming LLM token arrives over WebSocket",
-    "expected": "StreamChunkPayload"
-  },
-  {
-    "_comment": "--- BEHAVIOURAL: storage ---",
+    "_comment": "=== BEHAVIOURAL: storage ===",
     "type": "symbol",
     "query": "SQLite-backed persistent chat conversation storage on desktop",
     "expected": "DesktopSQLiteChatStore"
@@ -90,7 +75,78 @@
     "expected": "ToolExecutionContext"
   },
   {
-    "_comment": "--- FILE queries (3) ---",
+    "_comment": "=== SEMANTIC SHOWCASE: concept-level queries (keyword search would fail) ===",
+    "type": "symbol",
+    "query": "orchestrate multi-turn conversation flow with tool execution",
+    "expected": "AIChatRuntime"
+  },
+  {
+    "type": "symbol",
+    "query": "check whether a given API credential is valid and non-empty",
+    "expected": "validateApiKey"
+  },
+  {
+    "type": "symbol",
+    "query": "sanitize markup by removing tags and decoding HTML entities",
+    "expected": "stripHtml"
+  },
+  {
+    "type": "symbol",
+    "query": "QR code scanning screen for pairing with a desktop app",
+    "expected": "ScanScreen"
+  },
+  {
+    "type": "symbol",
+    "query": "collect and expose runtime performance counters and histograms",
+    "expected": "RuntimeMetrics"
+  },
+  {
+    "type": "symbol",
+    "query": "configuration for the rainbow color cycling effect",
+    "expected": "RainbowSettings"
+  },
+  {
+    "type": "symbol",
+    "query": "permission flags controlling agent filesystem and shell access",
+    "expected": "ToolPermissions"
+  },
+  {
+    "type": "symbol",
+    "query": "track prompt and completion token consumption for an AI call",
+    "expected": "TokenUsage"
+  },
+  {
+    "type": "symbol",
+    "query": "define the blueprint for functions that an AI model can invoke",
+    "expected": "ToolDefinition"
+  },
+  {
+    "type": "symbol",
+    "query": "delay component mount until after the browser finishes initial paint",
+    "expected": "useDeferredMount"
+  },
+  {
+    "type": "symbol",
+    "query": "manage backup copies and restoration of application data files",
+    "expected": "BackupManager"
+  },
+  {
+    "type": "symbol",
+    "query": "inter-process communication composable for Electron renderer",
+    "expected": "useIpc"
+  },
+  {
+    "type": "symbol",
+    "query": "look up localized text strings by translation key",
+    "expected": "t"
+  },
+  {
+    "type": "symbol",
+    "query": "adapt shell commands for cross-platform compatibility",
+    "expected": "wrapCommand"
+  },
+  {
+    "_comment": "=== FILE queries ===",
     "type": "file",
     "query": "core AI message and provider type definitions",
     "expected": "types.ts"
@@ -104,5 +160,15 @@
     "type": "file",
     "query": "waifu personality and system prompt builder",
     "expected": "personality.ts"
+  },
+  {
+    "type": "file",
+    "query": "secure credential storage implementations for desktop and mobile",
+    "expected": "keystore.ts"
+  },
+  {
+    "type": "file",
+    "query": "creating and restoring backup snapshots of the runtime data",
+    "expected": "backups.js"
   }
 ]

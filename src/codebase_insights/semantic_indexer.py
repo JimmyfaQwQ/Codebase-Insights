@@ -56,7 +56,11 @@ _TOKEN_SPLIT_RE = re.compile(r'[^a-z0-9]+')
 # Hit@1 regression — keyword tie-breakers (e.g. "options" in both AISetupOptions
 # and CreateProviderOptions) swamped the vector similarity signal that correctly
 # disambiguates semantically similar names.
-_KEYWORD_WEIGHT = 0.35
+_KEYWORD_WEIGHT = 0.30
+# Weight for query↔summary token overlap (stem-aware).  This directly rewards
+# results whose LLM-generated summary shares vocabulary with the query,
+# complementing the embedding-based vector similarity.
+_SUMMARY_WEIGHT = 0.15
 # Separate (lower) keyword weight for file search: file path tokens are much
 # noisier than symbol names (e.g. "provider" in provider.ts scores identically
 # for any provider-related query).  A lower weight keeps file search semantic.
@@ -90,6 +94,101 @@ def _tokenize(text: str) -> list[str]:
     expanded = _CAMEL_RE.sub(' ', text)
     tokens = _TOKEN_SPLIT_RE.split(expanded.lower())
     return [t for t in tokens if t and len(t) > 1]
+
+
+def _stem_set(token: str) -> frozenset[str]:
+    """Return the token plus lightweight morphological stem variants.
+
+    Handles common English inflections (-ing, -ed, -s, -es) so that
+    "streaming" matches "stream" and "executed" matches "execute".
+    Also decomposes compound tokens (e.g. "keystore" → "key" + "store").
+    """
+    stems: set[str] = {token}
+    if len(token) <= 3:
+        return frozenset(stems)
+    if token.endswith('ing') and len(token) > 5:
+        base = token[:-3]
+        stems.add(base)                # streaming → stream
+        stems.add(base + 'e')          # creating → create, storing → store
+        if len(base) >= 2 and base[-1] == base[-2] and base[-1] not in 'aeiou':
+            stems.add(base[:-1])       # running → run
+    if token.endswith('ed') and len(token) > 4:
+        base = token[:-2]
+        stems.add(base)                # dispatched → dispatch
+        stems.add(base + 'e')          # executed → execute, stored → store
+    if token.endswith('es') and len(token) > 4:
+        stems.add(token[:-2])          # messages → messag, but also catches -e stems
+    if token.endswith('s') and not token.endswith('ss') and len(token) > 3:
+        stems.add(token[:-1])          # tools → tool, traits → trait
+    # Compound decomposition: try splitting a long token into two known-looking
+    # parts (min 3 chars each).  This lets "keystore" yield {"key", "store"}.
+    if len(token) >= 6:
+        for i in range(3, len(token) - 2):
+            left, right = token[:i], token[i:]
+            if len(left) >= 3 and len(right) >= 3:
+                stems.add(left)
+                stems.add(right)
+    return frozenset(stems)
+
+
+# Word-boundary pattern: matches a token that is NOT preceded or followed by
+# a lowercase letter (allows digits, punctuation, start/end of string).
+_WORD_BOUNDARY_RE_CACHE: dict[str, re.Pattern] = {}
+
+
+def _word_boundary_match(needle: str, haystack: str) -> bool:
+    """Check if *needle* appears as a whole word in *haystack*."""
+    pat = _WORD_BOUNDARY_RE_CACHE.get(needle)
+    if pat is None:
+        pat = re.compile(r'(?<![a-z])' + re.escape(needle) + r'(?![a-z])')
+        _WORD_BOUNDARY_RE_CACHE[needle] = pat
+    return pat.search(haystack) is not None
+
+
+def _compute_summary_relevance(
+    query_tokens: set[str],
+    summary: str,
+    token_weights: dict[str, float] | None = None,
+) -> float:
+    """Weighted fraction of query tokens whose stems appear in the summary.
+
+    When *token_weights* is provided (query-token → weight), each matching
+    token contributes its weight rather than a flat 1.  This lets
+    discriminative tokens (e.g. "websocket") count more than ubiquitous
+    ones (e.g. "message").  Returns a value in [0, 1].
+    """
+    if not summary or not query_tokens:
+        return 0.0
+    summary_tokens = set(_tokenize(summary))
+    summary_stems: set[str] = set()
+    for t in summary_tokens:
+        summary_stems.update(_stem_set(t))
+    if token_weights:
+        matched_w = sum(
+            token_weights.get(qt, 1.0)
+            for qt in query_tokens
+            if _stem_set(qt) & summary_stems
+        )
+        total_w = sum(token_weights.get(qt, 1.0) for qt in query_tokens)
+        return matched_w / total_w if total_w > 0 else 0.0
+    matched = sum(1 for qt in query_tokens if _stem_set(qt) & summary_stems)
+    return matched / len(query_tokens)
+
+
+# ---------------------------------------------------------------------------
+# Kind-preference: detect type-describing queries
+# ---------------------------------------------------------------------------
+
+_TYPE_QUERY_INDICATORS = frozenset({
+    'class', 'interface', 'type', 'model', 'struct', 'enum',
+    'payload', 'options', 'context', 'contract', 'envelope',
+    'schema', 'definition', 'adapter', 'store', 'storage',
+    'registry', 'request', 'response', 'traits', 'data',
+})
+_TYPE_KINDS = frozenset({'Class', 'Interface', 'Enum', 'TypeAlias', 'Struct'})
+_IMPL_KINDS = frozenset({'Method', 'Function', 'Constructor'})
+_KIND_TYPE_BOOST = 1.20
+_KIND_IMPL_DEMOTE = 0.80
 
 
 def _safe_relpath(path: str, start: str) -> str:
@@ -335,10 +434,19 @@ class SemanticIndexer:
 
         return penalty
 
-    def _compute_name_relevance(self, query: str, name: str, container: str) -> float:
+    def _compute_name_relevance(
+        self,
+        query: str,
+        name: str,
+        container: str,
+        token_weights: dict[str, float] | None = None,
+    ) -> float:
         """Score how well a symbol's identity matches the query (0-1, higher = better).
 
-        Uses token overlap with bonuses for substring and exact matches.
+        Uses stem-aware token overlap with bonuses for whole-word substring matches.
+        Multi-token names receive a specificity bonus on descriptive queries.
+        When *token_weights* is provided, matching tokens are weighted by their
+        per-result vector affinity instead of counted equally.
         """
         query_tokens = set(_tokenize(query))
         if not query_tokens:
@@ -346,23 +454,52 @@ class SemanticIndexer:
 
         name_tokens = set(_tokenize(name))
 
-        # Token overlap (relative to query length)
-        overlap = len(query_tokens & name_tokens)
-        token_score = overlap / len(query_tokens)
+        # Stem-aware token overlap: expand name tokens into stem variants,
+        # then count how many query tokens match any variant.
+        name_expanded = set()
+        for t in name_tokens:
+            name_expanded.update(_stem_set(t))
 
-        # Substring match bonuses
+        if token_weights:
+            matched_w = sum(
+                token_weights.get(qt, 1.0)
+                for qt in query_tokens
+                if _stem_set(qt) & name_expanded
+            )
+            total_w = sum(token_weights.get(qt, 1.0) for qt in query_tokens)
+            token_score = matched_w / total_w if total_w > 0 else 0.0
+        else:
+            overlap = sum(1 for qt in query_tokens if _stem_set(qt) & name_expanded)
+            token_score = overlap / len(query_tokens)
+
+        # Substring match bonuses (require whole-word boundaries)
         ql, nl = query.lower(), name.lower()
         if nl == ql:
             token_score = 1.0
-        elif nl in ql or ql in nl:
+        elif ql in nl:
+            # Query contained in symbol name — user is searching for something specific
             token_score = max(token_score, 0.7)
+        elif len(nl) >= 3 and _word_boundary_match(nl, ql):
+            # Symbol name appears as a whole word in the query — scale by coverage
+            coverage = len(nl) / max(len(ql), 1)
+            substring_bonus = 0.3 + 0.4 * min(coverage, 1.0)
+            token_score = max(token_score, substring_bonus)
+
+        # Name specificity bonus: multi-token names matching a descriptive query
+        # are more likely to be the intended target than short generic names.
+        if len(query_tokens) >= 3 and len(name_tokens) >= 2:
+            specificity = min(0.12, 0.04 * (len(name_tokens) - 1))
+            token_score = min(1.0, token_score + specificity)
 
         # Container matching (weaker signal)
         container_score = 0.0
         if container:
             container_tokens = set(_tokenize(container))
             if container_tokens:
-                c_overlap = len(query_tokens & container_tokens)
+                container_expanded = set()
+                for t in container_tokens:
+                    container_expanded.update(_stem_set(t))
+                c_overlap = sum(1 for qt in query_tokens if _stem_set(qt) & container_expanded)
                 container_score = c_overlap / len(query_tokens)
 
         return min(1.0, 0.75 * token_score + 0.25 * container_score)
@@ -790,9 +927,10 @@ class SemanticIndexer:
         4. Blend vector similarity and keyword score into a hybrid score
         5. Apply noise penalties (generated paths, anonymous names, etc.)
         6. Apply ref-count boost (well-referenced symbols rank higher)
-        7. Apply exact-name-match multiplier (verbatim ×2.5 / full-token ×1.8)
-        8. Apply same-file / same-name diversity decay
-        9. Return top-k by final adjusted score
+        7. Apply kind-preference boost (type-like queries favour Class/Interface)
+        8. Apply exact-name-match multiplier (word-boundary verbatim / full-token)
+        9. Apply same-file / same-name diversity decay
+        10. Return top-k by final adjusted score
         """
         limit = min(max(1, limit), 100)
         fetch_k = limit * self._candidate_multiplier
@@ -821,6 +959,12 @@ class SemanticIndexer:
         # Pre-compute query info once — used for exact-name-match multiplier
         query_lower = query.lower()
         query_tokens_set = set(_tokenize(query))
+        # Stem-expanded query tokens for full-token multiplier check
+        query_stems_expanded = set()
+        for t in query_tokens_set:
+            query_stems_expanded.update(_stem_set(t))
+        # Kind-preference: count type-indicating tokens in the query
+        type_indicator_count = len(query_tokens_set & _TYPE_QUERY_INDICATORS)
 
         # Score each candidate
         scored: list[dict] = []
@@ -845,10 +989,21 @@ class SemanticIndexer:
             vector_sim = 1.0 / (1.0 + float(distance))
 
             # Keyword relevance from name / container matching
-            name_relevance = self._compute_name_relevance(query, name, container)
+            name_relevance = self._compute_name_relevance(
+                query, name, container,
+            )
 
-            # Blend
-            hybrid = (1.0 - _KEYWORD_WEIGHT) * vector_sim + _KEYWORD_WEIGHT * name_relevance
+            # Summary relevance: stem-aware token overlap between query and
+            # the LLM-generated summary.
+            summary_relevance = _compute_summary_relevance(
+                query_tokens_set, summary,
+            )
+
+            # Blend: vector + keyword (name) + summary
+            _VEC_WEIGHT = 1.0 - _KEYWORD_WEIGHT - _SUMMARY_WEIGHT
+            hybrid = (_VEC_WEIGHT * vector_sim
+                      + _KEYWORD_WEIGHT * name_relevance
+                      + _SUMMARY_WEIGHT * summary_relevance)
 
             # Noise penalty: path/name quality rules
             penalty = self._noise_penalty(file_path, name)
@@ -856,28 +1011,46 @@ class SemanticIndexer:
 
             # Ref-count boost (more references → higher score), capped to avoid
             # swamping vector similarity with ref-count bias.
-            # Formula: 1.0 + log1p(ref_count) * weight so the boost is always
-            # >= 1.0 for any positive ref_count (the old log1p(ref_count*weight)
-            # formula incorrectly penalised symbols with ref_count <= 5).
             ref_count = ref_count_map.get((file_path, def_line), 0)
             if self._ref_count_boost_weight > 0 and ref_count > 0:
                 boost = 1.0 + math.log1p(ref_count) * self._ref_count_boost_weight
-                # Cap: a symbol cannot boost more than 1.35x over baseline
                 boost = min(boost, 1.35)
                 hybrid *= boost
+
+            # Kind-preference boost: when the query describes a type/model/payload,
+            # favour Class/Interface/TypeAlias/Enum over Method/Function.
+            if type_indicator_count >= 1:
+                if kind in _TYPE_KINDS:
+                    hybrid *= _KIND_TYPE_BOOST
+                elif kind in _IMPL_KINDS and type_indicator_count >= 2:
+                    hybrid *= _KIND_IMPL_DEMOTE
 
             # Exact-name-match multiplier: reward queries that explicitly
             # reference this symbol's name.  Applied after penalty + boost so
             # it overrides noise without being itself amplified by boost.
             # Only fires for names with ≥4 chars to avoid stop-word collisions.
+            #
+            # Verbatim: whole-word match of the name in the query, scaled by
+            # coverage (how much of the query the name represents).
+            # Full-token: all camelCase/snake_case tokens of the name appear in
+            # the query (stem-aware), requires ≥2 name tokens.
             name_lower = name.lower()
             name_tok_set = set(_tokenize(name))
-            if len(name_lower) >= 4 and name_lower in query_lower:
-                # Full verbatim match — highest confidence
-                hybrid *= _NAME_VERBATIM_MULTIPLIER
-            elif len(name_tok_set) >= 2 and name_tok_set.issubset(query_tokens_set):
-                # All constituent tokens of the name appear in the query
-                hybrid *= _NAME_FULL_TOKEN_MULTIPLIER
+            if (len(name_lower) >= 4
+                    and _word_boundary_match(name_lower, query_lower)
+                    and len(name_tok_set) / max(len(query_tokens_set), 1) >= 0.15):
+                name_coverage = len(name_tok_set) / max(len(query_tokens_set), 1)
+                hybrid *= 1.5 + 1.0 * min(name_coverage, 1.0)
+            elif len(name_tok_set) >= 2:
+                # Stem-aware full token match: ALL name tokens appear in query.
+                matched_count = sum(
+                    1 for nt in name_tok_set
+                    if _stem_set(nt) & query_stems_expanded
+                )
+                if matched_count == len(name_tok_set):
+                    # Reward names that cover more query tokens
+                    coverage_bonus = min(0.3, 0.1 * (matched_count - 1))
+                    hybrid *= _NAME_FULL_TOKEN_MULTIPLIER + coverage_bonus
 
             scored.append({
                 "name":       name,

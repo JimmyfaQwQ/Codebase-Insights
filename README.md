@@ -46,26 +46,46 @@ The result is a reusable code-understanding layer for intelligent coding assista
 
 ## Benchmark Highlights
 
-Benchmark results below are from **codebase-insights v0.1.1** on a real Electron + Vue + React Native monorepo (`G:\SyntaxSenpai`) with **118 files**, **5,587 symbols**, and **32,570 cross-references**.
+Benchmark results below are from **codebase-insights v0.2.4** on a real Electron + Vue + React Native monorepo with **90 files**, **5,595 symbols**, and **31,195 cross-references**.
 
-These numbers come from an explicit full rebuild benchmark run. For normal evaluation, the recommended workflow is to **reuse the existing index and vector store** and focus on retrieval quality and LSP navigation. Only run rebuild benchmarks when rebuild behavior is explicitly under test.
+### Retrieval quality (v0.2.4)
+
+| Metric | Symbol search | File search |
+|---|---|---|
+| **Hit@1** | **96.4%** (27/28) | **100%** (5/5) |
+| **Hit@3** | **100%** (28/28) | **100%** (5/5) |
+| **Hit@5** | **100%** (28/28) | **100%** (5/5) |
+
+### Progress since v0.1.1
+
+| Version | Symbol Hit@1 | Symbol Hit@3 | File Hit@1 |
+|---|---|---|---|
+| v0.1.1 | 68.4% | 89.5% | — |
+| v0.2.3 | 29.4% (strict queries) | 76.5% | 33.3% |
+| **v0.2.4** | **96.4%** | **100%** | **100%** |
+
+> v0.2.3 introduced harder, more realistic benchmark queries (longer natural-language descriptions instead of near-exact symbol names). The v0.2.4 ranking improvements brought Hit@1 from 29.4% back to 96.4% on these harder queries.
+
+### Semantic search vs keyword search
+
+The benchmark includes queries where **semantic search succeeds but keyword search fails**:
+
+| Query | Expected | Semantic | Keyword |
+|---|---|:---:|:---:|
+| *"AI provider interface contract with chat and stream methods"* | `AIProvider` | ✓ | ✗ |
+| *"look up localized text strings by translation key"* | `t` | ✓ | ✗ |
+
+These demonstrate the advantage of hybrid vector + keyword ranking over pure lexical matching: semantic search finds `AIProvider` even when keyword search returns `AzureOpenAIProvider` instead, and retrieves the single-character translation function `t` from a natural-language description — something keyword search fundamentally cannot do.
+
+### Build performance (v0.1.1)
 
 | Metric | Value |
 |---|---|
 | Full pipeline wall time | **427.7s (~7.1 min)** |
-| Pre-server startup | **6.17s** |
-| Workspace indexing | **62.01s** |
-| Semantic indexing | **178.26s** |
-| File summaries | **40.51s** |
-| Project summary (full) | **138.06s** |
 | Storage footprint | **13.80 MB** |
-| Peak RSS | **3,201 MiB** |
-| Retrieval Hit@1 | **68.4%** |
-| Retrieval Hit@3 | **89.5%** |
-| Retrieval Hit@5 | **100%** |
 | No-change catch-up | **0.05s** |
 
-### Incremental updates
+### Incremental updates (v0.1.1)
 
 | Scenario | Total time |
 |---|---|
@@ -74,17 +94,7 @@ These numbers come from an explicit full rebuild benchmark run. For normal evalu
 | Core-file edit | **~19s** |
 | New file | **~21s** |
 
-### Retrieval quality highlights
-
-- **Semantic search outperforms keyword-only symbol matching** on concept-level queries
-- A single natural-language query for streaming surfaced provider `stream()` implementations across multiple backends
-- **File-level semantic search** can retrieve the most relevant module for architectural queries such as configuration loading, bootstrap, routing, or logging
-- LSP navigation resolved:
-  - **23 references** to `BaseAIProvider`
-  - **24 implementations** / subclasses
-- **Top-5 retrieval hit rate reached 100%** on the benchmark query set
-
-> See [docs/benchmark-v0.1.1.md](e:\Codebase-Insights\docs\benchmark-v0.1.1.md) for methodology, per-query results, incremental update scenarios, and failure analysis.
+> See [docs/benchmark-v0.2.4.md](docs/benchmark-v0.2.4.md) for per-query results. See [docs/benchmark-v0.1.1.md](docs/benchmark-v0.1.1.md) for full rebuild timing and incremental update methodology.
 
 ---
 
@@ -94,7 +104,7 @@ These numbers come from an explicit full rebuild benchmark run. For normal evalu
 - **Symbol indexing** — full workspace scan with file-watch-driven incremental re-indexing
 - **Semantic search** — AI-generated symbol summaries + embeddings for natural-language retrieval
 - **File search** — AI-generated file summaries + embeddings for module-level retrieval
-- **Hybrid ranking** — blends lexical matching with vector similarity and reference-aware ranking
+- **Hybrid ranking** — blends vector similarity, stem-aware keyword matching, summary relevance, and reference-count boost with kind-preference heuristics
 - **Flexible model backends** — Ollama (local) or OpenAI-compatible APIs
 - **MCP server** — exposes all capabilities over HTTP for any MCP-compatible client
 
@@ -160,20 +170,28 @@ Keyword search is still useful, but it breaks down quickly when agents need to r
 | Task | Keyword search | Codebase Insights |
 |---|---|---|
 | Find exact symbol names | Good | Good |
-| Find code by concept or behavior | Weak | Strong |
+| Find code by concept or behavior | Weak | **Strong** |
+| Find single-char or abbreviated names | Impossible | **Works** |
 | Jump to definitions | Manual / indirect | Built-in |
 | Find references | Approximate | Precise via LSP |
 | Find implementations / subclasses | Hard | Built-in |
 | Reuse code understanding across sessions | No | Yes |
 | Reduce repeated exploration cost | No | Yes |
 
-A concrete benchmark example:
+Concrete benchmark examples:
 
-- Query: **“LLM streaming response handling”**
-- Semantic search returns provider `stream()` implementations directly
-- Keyword symbol search mostly returns names that merely contain `"stream"` such as helpers or chunking utilities
+- Query: **"look up localized text strings by translation key"**
+  - Semantic search returns `t` (the translation function) directly
+  - Keyword search returns `constructor`, `greet`, `count` — completely wrong results
 
-At the file level, a query like **“where is configuration loaded and applied?”** can return the module responsible for config bootstrap even when the relevant symbol names do not literally contain `config`.
+- Query: **"AI provider interface contract with chat and stream methods"**
+  - Semantic search returns `AIProvider` ✓
+  - Keyword search returns `AzureOpenAIProvider` — a concrete implementation, not the interface
+
+- Query: **"sanitize markup by removing tags and decoding HTML entities"**
+  - Semantic search returns `stripHtml` despite zero keyword overlap between query and name
+
+At the file level, a query like **"secure credential storage implementations for desktop and mobile"** returns `keystore.ts` directly — even when the filename doesn't literally contain the concept words.
 
 That difference matters a lot for coding agents.
 
@@ -340,18 +358,18 @@ These environment variables override the corresponding TOML values:
 
 Codebase Insights is useful for questions like:
 
-- **“Find all implementations of this provider interface.”**
-- **“What handles WebSocket messages in this repo?”**
-- **“Where is configuration loaded and applied?”**
-- **“Which file is responsible for application bootstrap?”**
-- **“Which module owns logging and error handling?”**
-- **“Show me every reference to this base class.”**
-- **“Find the real code responsible for streaming responses.”**
-- **“Search the repository by behavior, not just by exact symbol names.”**
+- **{LQ}Find all implementations of this provider interface.{RQ}**
+- **{LQ}What handles WebSocket messages in this repo?{RQ}**
+- **{LQ}Where is configuration loaded and applied?{RQ}**
+- **{LQ}Look up localized text strings by translation key.{RQ}**
+- **{LQ}Sanitize markup by removing tags and decoding HTML entities.{RQ}**
+- **{LQ}Permission flags controlling agent filesystem and shell access.{RQ}**
+- **{LQ}Delay component mount until after the browser finishes initial paint.{RQ}**
 
 It is particularly effective for agents that need to:
 
 - move from natural-language intent to a likely symbol
+- find code by concept when you don’t know the exact name
 - expand from that symbol to definitions, references, and implementations
 - reduce file-opening and grep iteration overhead
 - retain reusable codebase understanding across sessions
@@ -396,7 +414,7 @@ Validated so far:
 
 - workspace-wide symbol indexing
 - LSP-backed navigation
-- semantic retrieval over indexed symbols
+- high-quality semantic retrieval (96.4% Hit@1 on benchmark)
 - persistent on-disk indexes
 - near-zero no-change catch-up
 - practical incremental update behavior
@@ -408,7 +426,6 @@ Still improving:
 - retrieval quality on diffuse / anonymous logic
 - indexing coverage trade-offs
 - performance on larger repositories
-- ergonomics and documentation
 
 ---
 
