@@ -8,7 +8,7 @@ human judgment:
   Phase 0  Pre-flight          (port check, config presence, environment)
   Phase 1  Marker verification ([BENCHMARK:*] markers present in source)
   Phase 2  Full rebuild        (delegates to benchmark_monitor.py; opt-in)
-  Phase 3  Incremental A–D     (server lifecycle + file edits + capture)
+  Phase 3  Incremental A–G     (server lifecycle + file edits + idle timers)
   Phase 4  Retrieval quality   (query execution; scoring is manual)
   Phase 5  LSP navigation      (MCP tool matrix against running server)
   Phase 7  Report generation   (writes docs/benchmark-v<VER>.md)
@@ -21,14 +21,19 @@ Usage
 
 Options
 -------
-    --phases 0,1,3,5,7      Comma-separated phases (default: 0,1,3,5,7)
-    --full-rebuild           Also run Phase 2 (time-consuming; ~7+ min)
-    --report-version VER     e.g. "0.2.0" (default: read from pyproject.toml)
-    --queries-file FILE      JSON list [{query, expected}] for Phase 4
-    --output-dir DIR         Output directory (default: benchmark_results)
-    --leaf-file PATH         Relative/absolute path in target repo for Scenario B
-    --core-file PATH         Relative/absolute path in target repo for Scenario C
-    --timeout-incremental N  Seconds to wait per incremental scenario (default: 300)
+    --phases 0,1,3,5,7          Comma-separated phases (default: 0,1,3,5,7)
+    --full-rebuild               Also run Phase 2 (time-consuming; ~7+ min)
+    --report-version VER         e.g. "0.2.0" (default: read from pyproject.toml)
+    --queries-file FILE          JSON list [{query, expected}] for Phase 4
+    --output-dir DIR             Output directory (default: benchmark_results)
+    --leaf-file PATH             Relative/absolute path in target repo for Scenario B
+    --core-file PATH             Relative/absolute path in target repo for Scenario C
+    --timeout-incremental N      Seconds to wait per incremental scenario (default: 300)
+    --file-idle-timeout N        Expected summary_file_idle_timeout from target config
+                                 (default: 30). Set to 0 to skip Scenario F.
+    --project-idle-timeout N     Expected summary_project_idle_timeout from target config
+                                 (default: 0, meaning skip Scenario G). Set to the value
+                                 configured in the target repo to enable Scenario G.
 """
 
 from __future__ import annotations
@@ -681,6 +686,8 @@ def phase3_incremental(
     leaf_file: str | None,
     core_file: str | None,
     timeout: float,
+    file_idle_timeout: float = 30.0,
+    project_idle_timeout: float = 0.0,
 ) -> None:
     print("\n=== Phase 3: Incremental update scenarios ===")
 
@@ -872,6 +879,117 @@ def phase3_incremental(
         print(f"    Done ({total_e:.1f}s, FILE_SUMMARIES={ok_e_fs} PROJECT_SUMMARY={ok_e_ps} "
               f"is_stale_cleared={ps_no_stale})")
         _print_bench_summary("E", data_e)
+
+        # ── Scenario F: Per-file idle timer ──────────────────────────────────
+        # Requires summary_file_idle_timeout > 0 in the target config.
+        if file_idle_timeout > 0 and core_file:
+            print(f"\n  [Scenario F] Per-file idle timer ({file_idle_timeout:.0f}s) "
+                  f"— {os.path.basename(core_file)}")
+            start_f = server.line_count()
+            t_f = time.monotonic()
+            appended_f = _append_test_code(core_file, "F")
+            print("    Edit applied — waiting for SEMANTIC (summaries deferred by threshold)...")
+            ok_f_sem, _ = server.wait_for_marker("SEMANTIC", start_f, timeout=120)
+            # Now wait for the per-file idle timer to fire FILE_SUMMARIES.
+            # Allow file_idle_timeout + 90s buffer.
+            idle_wait_f = file_idle_timeout + 90
+            print(f"    SEMANTIC done. Waiting up to {idle_wait_f:.0f}s for "
+                  f"FILE_SUMMARIES (idle timer)...")
+            ok_f_fs, _ = server.wait_for_marker("FILE_SUMMARIES", start_f, timeout=idle_wait_f)
+            # Per-file idle triggers a debounced project summary (~30s).
+            debounce_s = 30
+            print(f"    FILE_SUMMARIES seen={ok_f_fs}. Waiting up to {debounce_s + 60:.0f}s "
+                  f"for PROJECT_SUMMARY (debounce)...")
+            ok_f_ps, _ = server.wait_for_marker("PROJECT_SUMMARY", start_f,
+                                                 timeout=debounce_s + 60)
+            time.sleep(3)
+            lines_f = server.bench_lines_since(start_f)
+            total_f = time.monotonic() - t_f
+            data_f = ServerProcess.parse_bench_data(lines_f)
+
+            # Verify file summary is no longer stale
+            fs_result = call_tool("get_file_summary", {"file_path": core_file})
+            f_not_stale = (
+                isinstance(fs_result, dict)
+                and not fs_result.get("result", {}).get("is_stale", True)
+            )
+            print(f"    get_file_summary is_stale=False: {f_not_stale} (expected: True)")
+
+            scenarios["F"] = {
+                "description": f"Per-file idle timer ({file_idle_timeout:.0f}s)",
+                "file": core_file,
+                "ok": ok_f_sem and ok_f_fs,
+                "idle_fs_seen": ok_f_fs,
+                "idle_ps_seen": ok_f_ps,
+                "is_stale_cleared": f_not_stale,
+                "total_wall_s": round(total_f, 2),
+                "bench": data_f,
+            }
+            print(f"    Done ({total_f:.1f}s, SEMANTIC={ok_f_sem} FILE_SUMMARIES={ok_f_fs} "
+                  f"PROJECT_SUMMARY={ok_f_ps} is_stale_cleared={f_not_stale})")
+            _print_bench_summary("F", data_f)
+            _revert_file(core_file, appended_f)
+            print(f"    Reverted: {os.path.basename(core_file)}")
+            # Wait for revert watchdog to settle before Scenario G
+            time.sleep(10)
+        elif file_idle_timeout <= 0:
+            print("\n  [Scenario F] SKIPPED (--file-idle-timeout 0)")
+        else:
+            print("\n  [Scenario F] SKIPPED (no core file available)")
+
+        # ── Scenario G: Project idle timer ───────────────────────────────────
+        # Requires summary_project_idle_timeout > 0 in the target config AND
+        # passed via --project-idle-timeout.  Skipped by default (too slow).
+        if project_idle_timeout > 0 and leaf_file:
+            print(f"\n  [Scenario G] Project idle timer ({project_idle_timeout:.0f}s) "
+                  f"— {os.path.basename(leaf_file)}")
+            start_g = server.line_count()
+            t_g = time.monotonic()
+            appended_g = _append_test_code(leaf_file, "G")
+            print("    Edit applied — waiting for SEMANTIC (summaries deferred by threshold)...")
+            ok_g_sem, _ = server.wait_for_marker("SEMANTIC", start_g, timeout=120)
+            # Now leave the project idle.  The project idle timer fires
+            # project_idle_timeout seconds after the last watchdog event (SEMANTIC).
+            idle_wait_g = project_idle_timeout + 120
+            print(f"    SEMANTIC done. Waiting up to {idle_wait_g:.0f}s for "
+                  f"FILE_SUMMARIES + PROJECT_SUMMARY (project idle timer)...")
+            ok_g_fs, _ = server.wait_for_marker("FILE_SUMMARIES", start_g, timeout=idle_wait_g)
+            # For project idle, PROJECT_SUMMARY follows FILE_SUMMARIES immediately
+            # (no debounce — _index_project_summary called inline).
+            ok_g_ps, _ = server.wait_for_marker("PROJECT_SUMMARY", start_g, timeout=120)
+            time.sleep(3)
+            lines_g = server.bench_lines_since(start_g)
+            total_g = time.monotonic() - t_g
+            data_g = ServerProcess.parse_bench_data(lines_g)
+
+            # Verify project summary is no longer stale
+            ps_result_g = call_tool("get_project_summary", {})
+            g_not_stale = (
+                isinstance(ps_result_g, dict)
+                and not ps_result_g.get("result", {}).get("is_stale", False)
+            )
+            print(f"    get_project_summary is_stale=False: {g_not_stale} (expected: True)")
+
+            scenarios["G"] = {
+                "description": f"Project idle timer ({project_idle_timeout:.0f}s)",
+                "file": os.path.basename(leaf_file),
+                "ok": ok_g_sem and ok_g_fs and ok_g_ps,
+                "idle_fs_seen": ok_g_fs,
+                "idle_ps_seen": ok_g_ps,
+                "is_stale_cleared": g_not_stale,
+                "total_wall_s": round(total_g, 2),
+                "bench": data_g,
+            }
+            print(f"    Done ({total_g:.1f}s, SEMANTIC={ok_g_sem} FILE_SUMMARIES={ok_g_fs} "
+                  f"PROJECT_SUMMARY={ok_g_ps} is_stale_cleared={g_not_stale})")
+            _print_bench_summary("G", data_g)
+            _revert_file(leaf_file, appended_g)
+            print(f"    Reverted: {os.path.basename(leaf_file)}")
+            time.sleep(5)
+        elif project_idle_timeout <= 0:
+            print("\n  [Scenario G] SKIPPED (pass --project-idle-timeout N to enable)")
+        else:
+            print("\n  [Scenario G] SKIPPED (no leaf file available)")
 
         state["incremental"] = {
             "leaf_file": leaf_file,
@@ -1405,8 +1523,14 @@ def phase7_report(target_repo: str, version: str, output_dir: Path, state: dict)
             ("C", "Core file edit"),
             ("D", "New file added"),
             ("E", "Force refresh (MCP)"),
+            ("F", "Per-file idle timer"),
+            ("G", "Project idle timer"),
         ):
             sc = scenarios.get(letter, {})
+            if not sc:
+                if letter in ("F", "G"):
+                    w(f"| {letter}: {desc} | — | — | — | — | — | skipped |")
+                continue
             bench = sc.get("bench", {})
             idx_wt = bench.get("INDEXER",         {}).get("wall_time", "—")
             sem_wt = bench.get("SEMANTIC",         {}).get("wall_time", "—")
@@ -1418,13 +1542,20 @@ def phase7_report(target_repo: str, version: str, output_dir: Path, state: dict)
                 notes_parts.append(f"is_stale={sc['is_stale_verified']}")
             if letter == "E" and "is_stale_cleared" in sc:
                 notes_parts.append(f"stale_cleared={sc['is_stale_cleared']}")
+            if letter in ("F", "G"):
+                if "idle_fs_seen" in sc:
+                    notes_parts.append(f"idle_fs={sc['idle_fs_seen']}")
+                if "idle_ps_seen" in sc:
+                    notes_parts.append(f"idle_ps={sc['idle_ps_seen']}")
+                if "is_stale_cleared" in sc:
+                    notes_parts.append(f"stale_cleared={sc['is_stale_cleared']}")
             notes = ", ".join(notes_parts) if notes_parts else "—"
             w(f"| {letter}: {sc.get('description', desc)} | {idx_wt} | {sem_wt} | {fs_wt} | {ps_wt} | {total}s | {notes} |")
         w("")
 
         w("### Per-scenario BENCHMARK lines")
         w("")
-        for letter in ("A", "B", "C", "D", "E"):
+        for letter in ("A", "B", "C", "D", "E", "F", "G"):
             sc = scenarios.get(letter)
             if not sc:
                 continue
@@ -1570,6 +1701,8 @@ def phase7_report(target_repo: str, version: str, output_dir: Path, state: dict)
     w("- [ ] Port 6789 confirmed free before every server start")
     w("- [ ] All `[BENCHMARK:*]` markers flush to log in real time")
     w("- [ ] Scenarios A–E all have BENCHMARK data captured")
+    w("- [ ] Scenario F (per-file idle) verified: FILE_SUMMARIES fired after idle timeout")
+    w("- [ ] Scenario G (project idle) verified if --project-idle-timeout was passed")
     w("- [ ] LSP test matrix fully exercised")
     w("- [ ] Retrieval quality queries scored (if Phase 4 was run)")
     w("- [ ] Bugs found are documented with root cause + fix")
@@ -1653,6 +1786,22 @@ def main() -> None:
         metavar="N",
         help="Seconds to wait for each incremental scenario (default: %(default)s)",
     )
+    parser.add_argument(
+        "--file-idle-timeout",
+        type=float,
+        default=30.0,
+        metavar="N",
+        help="Expected summary_file_idle_timeout from target config (default: %(default)s). "
+             "Set to 0 to skip Scenario F.",
+    )
+    parser.add_argument(
+        "--project-idle-timeout",
+        type=float,
+        default=0.0,
+        metavar="N",
+        help="Expected summary_project_idle_timeout from target config (default: 0 = skip). "
+             "Pass the value from the target repo config to enable Scenario G.",
+    )
 
     args = parser.parse_args()
 
@@ -1702,7 +1851,10 @@ def main() -> None:
     if 2 in phases:
         phase2_full_rebuild(target_repo, output_dir, state)
     if 3 in phases:
-        phase3_incremental(target_repo, output_dir, state, leaf_file, core_file, args.timeout_incremental)
+        phase3_incremental(target_repo, output_dir, state, leaf_file, core_file,
+                           args.timeout_incremental,
+                           file_idle_timeout=args.file_idle_timeout,
+                           project_idle_timeout=args.project_idle_timeout)
 
     # Phases 4 and 5 need a running server.  Phase 3 stops its server when
     # done, so we start a fresh one here if needed (no rebuild flags — reuses
