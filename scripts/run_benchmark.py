@@ -778,10 +778,11 @@ def phase3_incremental(
             start_c = server.line_count()
             t_c = time.monotonic()
             appended_c = _append_test_code(core_file, "C")
-            print("    Edit applied — waiting for PROJECT_SUMMARY...")
-            ok_c_idx, _ = server.wait_for_marker("INDEXER",         start_c, timeout=60)
-            ok_c_sem, _ = server.wait_for_marker("SEMANTIC",        start_c, timeout=120)
-            ok_c_ps,  _ = server.wait_for_marker("PROJECT_SUMMARY", start_c, timeout=timeout)
+            # With summary_update_threshold > 1, a single file edit will NOT trigger
+            # FILE_SUMMARIES or PROJECT_SUMMARY — only INDEXER + SEMANTIC are expected.
+            print("    Edit applied — waiting for SEMANTIC (FILE_SUMMARIES deferred by threshold)...")
+            ok_c_idx, _ = server.wait_for_marker("INDEXER",  start_c, timeout=60)
+            ok_c_sem, _ = server.wait_for_marker("SEMANTIC", start_c, timeout=120)
             time.sleep(3)
             lines_c = server.bench_lines_since(start_c)
             total_c = time.monotonic() - t_c
@@ -793,7 +794,9 @@ def phase3_incremental(
                 "total_wall_s": round(total_c, 2),
                 "bench": data_c,
             }
-            print(f"    Done ({total_c:.1f}s, INDEXER={ok_c_idx} SEMANTIC={ok_c_sem} PROJECT_SUMMARY={ok_c_ps})")
+            print(f"    Done ({total_c:.1f}s, INDEXER={ok_c_idx} SEMANTIC={ok_c_sem} "
+                  f"FILE_SUMMARIES={data_c.get('FILE_SUMMARIES') is not None} "
+                  f"PROJECT_SUMMARY={data_c.get('PROJECT_SUMMARY') is not None})")
             _print_bench_summary("C", data_c)
             _revert_file(core_file, appended_c)
             print(f"    Reverted: {os.path.basename(core_file)}")
@@ -804,10 +807,10 @@ def phase3_incremental(
         start_d = server.line_count()
         t_d = time.monotonic()
         new_file = _create_test_file(target_repo)
-        print(f"    Created: {os.path.basename(new_file)} — waiting for PROJECT_SUMMARY...")
-        ok_d_idx, _ = server.wait_for_marker("INDEXER",         start_d, timeout=60)
-        ok_d_sem, _ = server.wait_for_marker("SEMANTIC",        start_d, timeout=120)
-        ok_d_ps,  _ = server.wait_for_marker("PROJECT_SUMMARY", start_d, timeout=timeout)
+        # Same as C: FILE_SUMMARIES/PROJECT_SUMMARY are deferred behind the threshold.
+        print(f"    Created: {os.path.basename(new_file)} — waiting for SEMANTIC (summaries deferred)...")
+        ok_d_idx, _ = server.wait_for_marker("INDEXER",  start_d, timeout=60)
+        ok_d_sem, _ = server.wait_for_marker("SEMANTIC", start_d, timeout=120)
         time.sleep(3)
         lines_d = server.bench_lines_since(start_d)
         total_d = time.monotonic() - t_d
@@ -819,19 +822,56 @@ def phase3_incremental(
             "total_wall_s": round(total_d, 2),
             "bench": data_d,
         }
-        print(f"    Done ({total_d:.1f}s, INDEXER={ok_d_idx} SEMANTIC={ok_d_sem} PROJECT_SUMMARY={ok_d_ps})")
+        print(f"    Done ({total_d:.1f}s, INDEXER={ok_d_idx} SEMANTIC={ok_d_sem})")
         _print_bench_summary("D", data_d)
+
+        # Verify that get_project_summary now reports is_stale=True
+        print("\n  [Scenario D] Verifying project summary staleness via MCP...")
+        ps_result = call_tool("get_project_summary", {})
+        ps_stale = (
+            isinstance(ps_result, dict)
+            and ps_result.get("result", {}).get("is_stale") is True
+        )
+        print(f"    get_project_summary is_stale={ps_stale} (expected: True)")
+        scenarios["D"]["is_stale_verified"] = ps_stale
+
         try:
             os.remove(new_file)
             print(f"    Removed: {os.path.basename(new_file)}")
-            # Wait for the watchdog to process the deletion so file_hashes and
-            # file_summaries are cleaned up before the server stops.  This prevents
-            # stale DB entries from causing the file to be skipped on the next run.
             removed_marker = f"[Indexer] Removed: {new_file}"
             if not server.wait_for_log_line(removed_marker, start_d, timeout=10):
-                time.sleep(3)  # fallback: give the watchdog a moment
+                time.sleep(3)
         except OSError as exc:
             print(f"    WARNING: could not remove test file: {exc}")
+
+        # ── Scenario E: Force refresh via MCP ────────────────────────────────
+        print("\n  [Scenario E] Force refresh via refresh_project_summary MCP tool...")
+        start_e = server.line_count()
+        t_e = time.monotonic()
+        e_result = call_tool("refresh_project_summary", {})
+        ok_e_fs,  _ = server.wait_for_marker("FILE_SUMMARIES",  start_e, timeout=timeout)
+        ok_e_ps,  _ = server.wait_for_marker("PROJECT_SUMMARY", start_e, timeout=timeout)
+        time.sleep(3)
+        lines_e = server.bench_lines_since(start_e)
+        total_e = time.monotonic() - t_e
+        data_e = ServerProcess.parse_bench_data(lines_e)
+        # After refresh, is_stale should be False
+        ps_after = call_tool("get_project_summary", {})
+        ps_no_stale = (
+            isinstance(ps_after, dict)
+            and not ps_after.get("result", {}).get("is_stale", False)
+        )
+        scenarios["E"] = {
+            "description": "Force refresh via refresh_project_summary",
+            "ok": ok_e_fs and ok_e_ps,
+            "is_stale_cleared": ps_no_stale,
+            "total_wall_s": round(total_e, 2),
+            "bench": data_e,
+            "mcp_result": e_result,
+        }
+        print(f"    Done ({total_e:.1f}s, FILE_SUMMARIES={ok_e_fs} PROJECT_SUMMARY={ok_e_ps} "
+              f"is_stale_cleared={ps_no_stale})")
+        _print_bench_summary("E", data_e)
 
         state["incremental"] = {
             "leaf_file": leaf_file,
@@ -1357,13 +1397,14 @@ def phase7_report(target_repo: str, version: str, output_dir: Path, state: dict)
         w(f"Leaf file: `{incremental.get('leaf_file', '—')}`  ")
         w(f"Core file: `{incremental.get('core_file', '—')}`")
         w("")
-        w("| Scenario | Watchdog+LSP | Semantic | File Summaries | Proj Summary | Total |")
-        w("|---|---|---|---|---|---|")
+        w("| Scenario | Watchdog+LSP | Semantic | File Summaries | Proj Summary | Total | Notes |")
+        w("|---|---|---|---|---|---|---|")
         for letter, desc in (
             ("A", "No-change restart"),
             ("B", "Leaf file edit"),
             ("C", "Core file edit"),
             ("D", "New file added"),
+            ("E", "Force refresh (MCP)"),
         ):
             sc = scenarios.get(letter, {})
             bench = sc.get("bench", {})
@@ -1372,12 +1413,18 @@ def phase7_report(target_repo: str, version: str, output_dir: Path, state: dict)
             fs_wt  = bench.get("FILE_SUMMARIES",   {}).get("wall_time", "—")
             ps_wt  = bench.get("PROJECT_SUMMARY",  {}).get("wall_time", "—")
             total  = sc.get("total_wall_s", "—")
-            w(f"| {letter}: {sc.get('description', desc)} | {idx_wt} | {sem_wt} | {fs_wt} | {ps_wt} | {total}s |")
+            notes_parts = []
+            if letter == "D" and "is_stale_verified" in sc:
+                notes_parts.append(f"is_stale={sc['is_stale_verified']}")
+            if letter == "E" and "is_stale_cleared" in sc:
+                notes_parts.append(f"stale_cleared={sc['is_stale_cleared']}")
+            notes = ", ".join(notes_parts) if notes_parts else "—"
+            w(f"| {letter}: {sc.get('description', desc)} | {idx_wt} | {sem_wt} | {fs_wt} | {ps_wt} | {total}s | {notes} |")
         w("")
 
         w("### Per-scenario BENCHMARK lines")
         w("")
-        for letter in ("A", "B", "C", "D"):
+        for letter in ("A", "B", "C", "D", "E"):
             sc = scenarios.get(letter)
             if not sc:
                 continue
@@ -1522,7 +1569,7 @@ def phase7_report(target_repo: str, version: str, output_dir: Path, state: dict)
     w("")
     w("- [ ] Port 6789 confirmed free before every server start")
     w("- [ ] All `[BENCHMARK:*]` markers flush to log in real time")
-    w("- [ ] Scenarios A–D all have BENCHMARK data captured")
+    w("- [ ] Scenarios A–E all have BENCHMARK data captured")
     w("- [ ] LSP test matrix fully exercised")
     w("- [ ] Retrieval quality queries scored (if Phase 4 was run)")
     w("- [ ] Bugs found are documented with root cause + fix")

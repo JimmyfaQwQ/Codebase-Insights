@@ -28,7 +28,7 @@ from langchain_chroma import Chroma
 from .workspace_indexer import _DB_FILENAME, SYMBOL_KIND_NAMES, canonical_path
 from .semantic_config import (
     semantic_index_kinds, semantic_concurrency, semantic_batch_size,
-    semantic_min_ref_count,
+    semantic_min_ref_count, semantic_summary_update_threshold,
     ranking_file_suffix_penalties, ranking_path_fragment_penalties,
     ranking_default_penalty,
     ranking_candidate_multiplier, ranking_ref_count_boost_weight,
@@ -267,7 +267,8 @@ CREATE TABLE IF NOT EXISTS file_summaries (
     file_path        TEXT PRIMARY KEY,
     structural_hash  TEXT NOT NULL,
     summary          TEXT NOT NULL,
-    generated_at     REAL NOT NULL
+    generated_at     REAL NOT NULL,
+    is_stale         INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -367,6 +368,10 @@ class SemanticIndexer:
         self._lock = threading.Lock()
         self._project_summary_timer: threading.Timer | None = None
         self._project_summary_timer_lock = threading.Lock()
+        self._summary_update_threshold = semantic_summary_update_threshold()
+        # In-memory set of file paths whose summaries are pending regeneration.
+        # Accumulated until _summary_update_threshold is reached, then flushed.
+        self._pending_stale_paths: set[str] = set()
 
         # Ranking config (loaded once at init, no global mutable state)
         self._suffix_penalties = ranking_file_suffix_penalties()
@@ -407,6 +412,13 @@ class SemanticIndexer:
         cols = {row[1] for row in con.execute("PRAGMA table_info(symbol_summaries)").fetchall()}
         if "file_hash" in cols and "symbol_hash" not in cols:
             con.execute("ALTER TABLE symbol_summaries RENAME COLUMN file_hash TO symbol_hash")
+            con.commit()
+        # Migrate: add is_stale column if it doesn't exist yet
+        fs_cols = {row[1] for row in con.execute("PRAGMA table_info(file_summaries)").fetchall()}
+        if "is_stale" not in fs_cols:
+            con.execute(
+                "ALTER TABLE file_summaries ADD COLUMN is_stale INTEGER NOT NULL DEFAULT 0"
+            )
             con.commit()
 
     # ------------------------------------------------------------------
@@ -613,7 +625,7 @@ class SemanticIndexer:
                         con.close()
                     except sqlite3.Error:
                         all_files = affected_files
-                    self._generate_file_summaries(all_files)
+                    self._generate_file_summaries(all_files, force=True)
                 else:
                     # Incremental: only re-check files touched by this batch,
                     # plus any that are still missing a summary.
@@ -630,7 +642,7 @@ class SemanticIndexer:
                         con.close()
                     except sqlite3.Error:
                         unsummarised = []
-                    self._generate_file_summaries(list(set(affected_files) | set(unsummarised)))
+                    self._generate_file_summaries(list(set(affected_files) | set(unsummarised)), force=False)
                 self._schedule_project_summary(debounce=debounce)
             except Exception as e:
                 print(f"[Semantic] Error during indexing: {e}")
@@ -652,6 +664,63 @@ class SemanticIndexer:
                 )
             except Exception:
                 pass
+
+    def refresh_file_summary(self, file_path: str) -> dict:
+        """Force-regenerate the AI summary for a single file, ignoring the change
+        threshold.  The file's ``is_stale`` flag is cleared after a successful run.
+
+        Returns a dict with ``"result"`` on success or ``"error"`` on failure.
+        """
+        norm = canonical_path(file_path)
+        if not os.path.isabs(norm):
+            norm = os.path.normpath(os.path.join(self._root_dir, norm))
+        # Mark stale so that force=True regenerates it regardless of hash match.
+        try:
+            con = sqlite3.connect(self._db_path, check_same_thread=False)
+            con.execute("UPDATE file_summaries SET is_stale=1 WHERE file_path=?", (norm,))
+            con.commit()
+            con.close()
+        except sqlite3.Error:
+            pass
+        with self._lock:
+            try:
+                self._generate_file_summaries([norm], force=True)
+            except Exception as e:
+                return {"error": f"Failed to refresh file summary: {e}"}
+        try:
+            self._schedule_project_summary(debounce=True)
+        except Exception as e:
+            print(f"[Semantic] Error scheduling project summary after file refresh: {e}")
+        return {"result": f"File summary refreshed for: {norm}"}
+
+    def refresh_project_summary(self) -> dict:
+        """Force-regenerate file summaries for all stale files, then regenerate
+        the project summary immediately (bypassing the change threshold).
+
+        Returns a dict with ``"result"`` on success or ``"error"`` on failure.
+        """
+        with self._lock:
+            try:
+                # Re-generate all files with is_stale=1 or pending in memory
+                stale_from_db: list[str] = []
+                try:
+                    con = sqlite3.connect(self._db_path, check_same_thread=False)
+                    con.row_factory = sqlite3.Row
+                    stale_from_db = [
+                        r[0] for r in con.execute(
+                            "SELECT file_path FROM file_summaries WHERE is_stale=1"
+                        ).fetchall()
+                    ]
+                    con.close()
+                except sqlite3.Error:
+                    pass
+                pending_paths = list(self._pending_stale_paths | set(stale_from_db))
+                if pending_paths:
+                    self._generate_file_summaries(pending_paths, force=True)
+                self._index_project_summary(force=True)
+            except Exception as e:
+                return {"error": f"Failed to refresh project summary: {e}"}
+        return {"result": "Project summary (and all stale file summaries) refreshed."}
 
     def remove_file(self, file_path: str):
         """Remove all semantic data for symbols in the given file."""
@@ -885,7 +954,7 @@ class SemanticIndexer:
             con = sqlite3.connect(self._db_path, check_same_thread=False)
             con.row_factory = sqlite3.Row
             row = con.execute(
-                "SELECT file_path, summary, generated_at FROM file_summaries WHERE file_path=?",
+                "SELECT file_path, summary, generated_at, is_stale FROM file_summaries WHERE file_path=?",
                 (canonical_path(file_path),),
             ).fetchone()
             con.close()
@@ -893,7 +962,14 @@ class SemanticIndexer:
             return {"error": f"Database error: {e}"}
         if row is None:
             return {"error": f"No file summary found for: {file_path}"}
-        return {"result": {"file": row["file_path"], "summary": row["summary"]}}
+        result: dict = {"file": row["file_path"], "summary": row["summary"]}
+        if row["is_stale"]:
+            result["is_stale"] = True
+            result["stale_note"] = (
+                "Summary is not up to date — the file's structure has changed since it was last "
+                "generated. Call refresh_file_summary to regenerate it immediately."
+            )
+        return {"result": result}
 
     def get_project_summary(self) -> dict:
         """Return the stored AI project-level summary, or an error dict if not found."""
@@ -903,12 +979,24 @@ class SemanticIndexer:
             row = con.execute(
                 "SELECT summary, generated_at FROM project_summary WHERE id=1",
             ).fetchone()
+            stale_count_row = con.execute(
+                "SELECT COUNT(*) AS n FROM file_summaries WHERE is_stale=1"
+            ).fetchone()
             con.close()
         except sqlite3.Error as e:
             return {"error": f"Database error: {e}"}
         if row is None:
             return {"error": "Project summary not yet generated. The indexer may still be running."}
-        return {"result": {"summary": row["summary"]}}
+        db_stale = (stale_count_row["n"] if stale_count_row else 0)
+        pending = max(db_stale, len(self._pending_stale_paths))
+        result: dict = {"summary": row["summary"]}
+        if pending > 0:
+            result["is_stale"] = True
+            result["stale_note"] = (
+                f"{pending} file(s) have pending summary updates — the project summary may not "
+                "reflect recent changes. Call refresh_project_summary to regenerate immediately."
+            )
+        return {"result": result}
 
     def search(
         self,
@@ -1247,8 +1335,21 @@ class SemanticIndexer:
         finally:
             con.close()
 
-    def _generate_file_summaries(self, file_paths: list[str]) -> None:
-        """Generate or update file-level summaries for the given files."""
+    def _generate_file_summaries(self, file_paths: list[str], force: bool = False) -> None:
+        """Generate or update file-level summaries for the given files.
+
+        When *force* is ``False`` (incremental / watchdog updates):
+          Files whose structural hash has changed are marked ``is_stale=1`` in the
+          DB and added to ``_pending_stale_paths``.  Actual LLM regeneration is
+          deferred until the count reaches ``_summary_update_threshold``.  When
+          the threshold is 0, auto-regeneration is disabled entirely; use the
+          ``refresh_file_summary`` / ``refresh_project_summary`` MCP tools instead.
+
+        When *force* is ``True`` (full rebuild or explicit MCP refresh):
+          All files whose hash has changed *or* that are already marked stale are
+          regenerated immediately.  ``_pending_stale_paths`` is cleared and all
+          ``is_stale`` flags are reset to 0 after a successful run.
+        """
         if not file_paths:
             return
         _bm_fs_start = time.perf_counter()
@@ -1261,23 +1362,22 @@ class SemanticIndexer:
             print(f"[Semantic] File summary DB error: {e}")
             return
 
-        messages_list: list[list] = []
-        pending_files: list[tuple[str, str]] = []   # (file_path, structural_hash)
-        # Maps norm → top-level exported symbol names for embed text enrichment
-        file_top_syms: dict[str, list[str]] = {}
+        # ── Phase 1: Compute structural hashes and decide action per file ─────
+        # In force=False mode: mark stale in DB, update _pending_stale_paths, check threshold.
+        # In force=True mode: collect all files needing regeneration.
+        paths_to_regen: list[str] = []  # absolute-normalised paths that need LLM
+        stale_db_updated = False
 
         try:
             for file_path in file_paths:
                 norm = canonical_path(file_path)
-                # Compute the canonical absolute path for storage in file_summaries.
-                # The symbols table may have stored the path in relative form, so we
-                # keep `query_path` (as-is) for the symbols SELECT and only use
-                # `abs_norm` as the storage key.
                 query_path = norm
                 if not os.path.isabs(norm):
                     abs_norm = os.path.normpath(os.path.join(self._root_dir, norm))
                 else:
                     abs_norm = norm
+
+                # Compute structural hash
                 rows = con.execute(
                     """SELECT s.name, s.kind_label, s.container_name, s.def_line, ss.summary
                        FROM symbols s
@@ -1286,8 +1386,6 @@ class SemanticIndexer:
                        ORDER BY s.def_line""",
                     (query_path,),
                 ).fetchall()
-                # If no symbols found with the original path, retry with absolute form
-                # (handles files whose symbols were indexed with the absolute path).
                 if not rows and query_path != abs_norm:
                     rows = con.execute(
                         """SELECT s.name, s.kind_label, s.container_name, s.def_line, ss.summary
@@ -1297,13 +1395,101 @@ class SemanticIndexer:
                            ORDER BY s.def_line""",
                         (abs_norm,),
                     ).fetchall()
-                # Use the canonical absolute path for all storage from here on.
                 norm = abs_norm
 
+                if not rows:
+                    try:
+                        with open(norm, "r", encoding="utf-8", errors="replace") as fh:
+                            head = "".join(line for _, line in zip(range(50), fh))
+                    except OSError:
+                        continue
+                    struct_str = "no-symbols:" + head
+                else:
+                    struct_str = "\n".join(
+                        f"{r['def_line']}|{r['kind_label']}|{r['name']}|{r['container_name'] or ''}"
+                        for r in rows
+                    )
+                structural_hash = hashlib.sha256(struct_str.encode("utf-8")).hexdigest()
+
+                existing = con.execute(
+                    "SELECT structural_hash, is_stale FROM file_summaries WHERE file_path=?",
+                    (norm,),
+                ).fetchone()
+                hash_changed = (not existing) or (existing["structural_hash"] != structural_hash)
+                db_stale = bool(existing and existing["is_stale"])
+
+                if force:
+                    if hash_changed or db_stale:
+                        paths_to_regen.append(norm)
+                else:
+                    # Threshold mode
+                    if existing and not hash_changed and not db_stale:
+                        continue  # Truly up to date
+                    if hash_changed and existing:
+                        con.execute(
+                            "UPDATE file_summaries SET is_stale=1, structural_hash=? WHERE file_path=?",
+                            (structural_hash, norm),
+                        )
+                        stale_db_updated = True
+                    self._pending_stale_paths.add(norm)
+
+            if stale_db_updated:
+                con.commit()
+
+            if not force:
+                n = len(self._pending_stale_paths)
+                threshold = self._summary_update_threshold
+                if threshold == 0 or n < threshold:
+                    if n > 0:
+                        if threshold == 0:
+                            note = "auto-regen disabled (threshold=0)"
+                        else:
+                            note = f"{n}/{threshold} threshold"
+                        print(
+                            f"[Semantic] File summaries deferred: {n} file(s) pending "
+                            f"({note}). "
+                            "Use refresh_file_summary / refresh_project_summary MCP tools to update.",
+                            flush=True,
+                        )
+                    return
+                # Threshold reached: regenerate ALL pending (DB-stale + new/untracked files)
+                stale_db_paths = [
+                    r[0] for r in con.execute(
+                        "SELECT file_path FROM file_summaries WHERE is_stale=1"
+                    ).fetchall()
+                ]
+                db_set = set(stale_db_paths)
+                new_file_paths = [p for p in self._pending_stale_paths if p not in db_set]
+                paths_to_regen = stale_db_paths + new_file_paths
+                print(
+                    f"[Semantic] Summary threshold reached "
+                    f"({n}/{threshold}), regenerating {len(paths_to_regen)} file(s)...",
+                    flush=True,
+                )
+
+            if not paths_to_regen:
+                if force:
+                    self._pending_stale_paths.clear()
+                return
+
+            # ── Phase 2: Build LLM messages for files to regenerate ───────────
+            messages_list: list[list] = []
+            pending_files: list[tuple[str, str]] = []   # (file_path, structural_hash)
+            file_top_syms: dict[str, list[str]] = {}
+
+            for norm in paths_to_regen:
+                query_path = norm if os.path.isabs(norm) else canonical_path(norm)
+                rows = con.execute(
+                    """SELECT s.name, s.kind_label, s.container_name, s.def_line, ss.summary
+                       FROM symbols s
+                       LEFT JOIN symbol_summaries ss ON ss.symbol_id = s.id
+                       WHERE s.file_path = ?
+                       ORDER BY s.def_line""",
+                    (query_path,),
+                ).fetchall()
                 rel_path = _safe_relpath(norm, self._root_dir)
 
                 if not rows:
-                    # No symbols — fall back to first 50 lines of source
                     try:
                         with open(norm, "r", encoding="utf-8", errors="replace") as fh:
                             head = "".join(line for _, line in zip(range(50), fh))
@@ -1311,34 +1497,17 @@ class SemanticIndexer:
                         continue
                     struct_str = "no-symbols:" + head
                     structural_hash = hashlib.sha256(struct_str.encode("utf-8")).hexdigest()
-                    existing = con.execute(
-                        "SELECT structural_hash FROM file_summaries WHERE file_path=?",
-                        (norm,),
-                    ).fetchone()
-                    if existing and existing["structural_hash"] == structural_hash:
-                        continue
                     user_msg = (
                         f"File: {rel_path}\n"
                         f"Note: No symbols were extracted from this file by the LSP indexer.\n"
                         f"First 50 lines of source:\n```\n{head.rstrip()}\n```"
                     )
                 else:
-                    # Compute structural hash from symbol structure (not content)
                     struct_str = "\n".join(
                         f"{r['def_line']}|{r['kind_label']}|{r['name']}|{r['container_name'] or ''}"
                         for r in rows
                     )
                     structural_hash = hashlib.sha256(struct_str.encode("utf-8")).hexdigest()
-
-                    # Check if already up to date
-                    existing = con.execute(
-                        "SELECT structural_hash FROM file_summaries WHERE file_path=?",
-                        (norm,),
-                    ).fetchone()
-                    if existing and existing["structural_hash"] == structural_hash:
-                        continue
-
-                    # Build symbol listing for LLM; track top-level exports for embedding
                     sym_lines = [f"File: {rel_path}", "Symbols:"]
                     top_syms: list[str] = []
                     for r in rows:
@@ -1358,8 +1527,11 @@ class SemanticIndexer:
                 pending_files.append((norm, structural_hash))
 
             if not pending_files:
+                if force:
+                    self._pending_stale_paths.clear()
                 return
 
+            # ── Phase 3: LLM batch generation ────────────────────────────────
             print(f"[Semantic] Generating summaries for {len(pending_files)} file(s)...")
             try:
                 responses = self._llm.batch(
@@ -1379,8 +1551,8 @@ class SemanticIndexer:
                     summary = response.content.strip()
                     con.execute(
                         """INSERT OR REPLACE INTO file_summaries
-                           (file_path, structural_hash, summary, generated_at)
-                           VALUES (?, ?, ?, ?)""",
+                           (file_path, structural_hash, summary, generated_at, is_stale)
+                           VALUES (?, ?, ?, ?, 0)""",
                         (norm, structural_hash, summary, now),
                     )
                     rel = _safe_relpath(norm, self._root_dir)
@@ -1392,6 +1564,10 @@ class SemanticIndexer:
                 except Exception as e:
                     print(f"[Semantic] Failed to save file summary for {norm}: {e}")
             con.commit()
+
+            # Clear all stale flags and in-memory pending set
+            self._pending_stale_paths.clear()
+
             if file_vec_texts:
                 try:
                     self._file_vectorstore.add_texts(
@@ -1410,7 +1586,7 @@ class SemanticIndexer:
         finally:
             con.close()
 
-    def _index_project_summary(self) -> None:
+    def _index_project_summary(self, force: bool = False) -> None:
         """Regenerate the project-level summary if any file summary has changed.
 
         Uses an **incremental** strategy when possible: if an existing project
@@ -1418,6 +1594,9 @@ class SemanticIndexer:
         LLM is asked to *update* the summary based on a compact diff rather
         than regenerating from the full file list.  This dramatically reduces
         prompt size and latency for common edit scenarios.
+
+        When *force* is ``True`` the summaries-hash equality check is skipped so
+        that the summary is always regenerated (used by ``refresh_project_summary``).
         """
         _bm_ps_start = time.perf_counter()
         try:
@@ -1443,7 +1622,7 @@ class SemanticIndexer:
             existing = con.execute(
                 "SELECT summaries_hash, summary FROM project_summary WHERE id=1"
             ).fetchone()
-            if existing and existing["summaries_hash"] == summaries_hash:
+            if not force and existing and existing["summaries_hash"] == summaries_hash:
                 return
 
             # --- Try incremental update -----------------------------------

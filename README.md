@@ -39,6 +39,7 @@ The project combines:
 | Semantic file search | `search_files(query)` finds files by responsibility or architecture role |
 | Stored summaries | Per-symbol, per-file, and project-level summaries |
 | Incremental maintenance | Skips unchanged files, watches for edits, updates changed content only |
+| Deferred summary updates | File/project summaries regenerate only after a configurable number of changes accumulate, keeping LLM costs low during active editing |
 | MCP integration | Exposes the index and navigation tools over streamable HTTP |
 | Flexible model setup | Chat and embedding providers can be configured independently |
 
@@ -46,15 +47,15 @@ Supported languages today: **Python**, **JavaScript/TypeScript**, **C++**, and *
 
 ## Latest benchmark snapshot
 
-The latest benchmark checked into this repository is **v1.0.1**, generated on **2026-04-16** against a real Electron + Vue + React Native monorepo (`G:\SyntaxSenpai`).
+The latest benchmark checked into this repository is **v1.1.0**, generated on **2026-04-16** against a real Electron + Vue + React Native monorepo (`G:\SyntaxSenpai`).
 
 ### Benchmark target
 
 | Metric | Value |
 |---|---:|
 | Files processed | 89 |
-| Symbols | 5,592 |
-| Cross-references | 31,791 |
+| Symbols | 5,593 |
+| Cross-references | 31,792 |
 
 ### Retrieval quality
 
@@ -76,22 +77,23 @@ Key takeaways from the latest run:
 
 This matters because Codebase Insights is trying to solve the exact case where the caller knows **what the code does**, but not **what the symbol is named**.
 
-The latest checked-in benchmark report is [docs/benchmark-v1.0.1.md](docs/benchmark-v1.0.1.md). Historical benchmark reports are also kept under [docs/](docs).
+The latest checked-in benchmark report is [docs/benchmark-v1.1.0.md](docs/benchmark-v1.1.0.md). Historical benchmark reports are also kept under [docs/](docs).
 
 ### Performance baseline
 
-For **full rebuild** and **incremental update** behavior, the v1.0.1 baseline is:
+For **full rebuild** and **incremental update** behavior, the v1.1.0 baseline is:
 
 | Metric | Result |
 |---|---|
 | Full pipeline wall time | **499.79s (~8.3 min)** |
-| Storage footprint | **15.09 MB** (6.37 MB SQLite + 8.72 MB ChromaDB) |
-| No-change catch-up | **30.2s** |
-| Leaf-file edit | **27.2s** |
-| Core-file edit | **63.2s** (3.65s semantic + 7.0s file summary + 14.4s incremental project summary) |
-| New file | **67.0s** (3.9s semantic + 3.9s file summary + 16.4s incremental project summary) |
+| Storage footprint | **15.09 MB** (6.37 MB SQLite + 8.73 MB ChromaDB) |
+| No-change catch-up | **36.0s** |
+| Leaf-file edit | **13.0s** (semantic only, summaries deferred) |
+| Core-file edit | **63.0s** (9.5s semantic; summaries deferred by threshold) |
+| New file | **63.0s** (7.6s semantic; summaries deferred by threshold) |
+| Force refresh (MCP) | **28.2s** (8.9s file summaries + 15.7s incremental project summary) |
 
-The v1.0.1 project summary fix reduces per-update LLM output from ~14 KB to ~2 KB by removing the redundant per-file bullet list from the project summary prompt. Incremental project summary now takes **~15–20s** instead of ~136s. Core-file edit dropped from **~179s to 63s** and new-file addition from **~157s to 67s**, both now completing end-to-end in under 70 seconds.
+**v1.1.0 key change:** file and project summaries are now regenerated lazily based on a configurable `summary_update_threshold` (default: 5).  Incremental edits that do not cross the threshold mark summaries as **stale** and return immediately — no LLM call for every keystroke.  When the threshold is reached, or when the MCP refresh tools are called explicitly, the batch of stale summaries is regenerated at once.  This changes the per-edit cost profile: leaf-file edits now take **13s** (semantic only) instead of 27s, and core-file edits are **63s** instead of 63s + summary regeneration on every edit.
 
 ## How it works
 
@@ -218,7 +220,14 @@ index_kinds = ["Class", "Method", "Function", "Interface", "Enum", "Constructor"
 concurrency = 16
 batch_size = 16
 min_ref_count = 3
+summary_update_threshold = 5
 ```
+
+`summary_update_threshold` controls how many files must have their symbol structure change before file/project summaries are automatically regenerated during live editing (watchdog updates):
+
+- `1` — regenerate on every single change (original behaviour)
+- `5` (default) — accumulate 5 structurally-changed files before triggering a batch regeneration
+- `0` — disable auto-regeneration entirely; use the `refresh_file_summary` / `refresh_project_summary` MCP tools explicitly
 
 ### API key precedence
 
@@ -296,6 +305,10 @@ Normal usage is incremental. The rebuild flags are mainly for maintenance, model
 | `search_files(query, limit)` | Find files by natural-language responsibility |
 | `get_file_summary(file_path)` | Fetch the stored summary for one file |
 | `get_project_summary()` | Fetch the stored project-level overview |
+| `refresh_file_summary(file_path)` | Force-regenerate the summary for a specific file immediately |
+| `refresh_project_summary()` | Force-regenerate all stale file summaries and the project summary |
+
+When a file's symbol structure changes but the `summary_update_threshold` has not been reached yet, `get_file_summary` and `get_project_summary` return an `is_stale: true` field alongside the last-known summary to indicate the result may be out of date. Use the refresh tools to update immediately rather than waiting for the threshold.
 
 For LSP calls, the server accepts normal `file:///...` URIs and also normal absolute filesystem paths.
 

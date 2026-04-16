@@ -651,6 +651,46 @@ def get_project_summary() -> dict:
     return _semantic_indexer.get_project_summary()
 
 
+@mcp.tool()
+def refresh_file_summary(file_path: str) -> dict:
+    """Force-regenerate the AI summary for a specific file immediately.
+
+    Use this when ``get_file_summary`` returns a result with ``is_stale: true``,
+    or whenever you want an up-to-date summary without waiting for the
+    automatic threshold to be reached.
+
+    The ``summary_update_threshold`` config option controls how many files must
+    change before summaries are regenerated automatically during live editing.
+    Set it to 0 to disable auto-regeneration entirely and always use this tool.
+
+    Args:
+        file_path: Absolute path to the file to refresh, e.g. "E:/my-project/src/main.py".
+    """
+    if _semantic_indexer is None:
+        return {"error": "Semantic indexing is not available. "
+                         "Ensure an LLM provider (Ollama / OpenAI) is configured."}
+    return _semantic_indexer.refresh_file_summary(file_path)
+
+
+@mcp.tool()
+def refresh_project_summary() -> dict:
+    """Force-regenerate the project summary (and all stale file summaries) immediately.
+
+    Use this when ``get_project_summary`` returns a result with ``is_stale: true``,
+    or after making several edits that haven't yet crossed the automatic
+    ``summary_update_threshold``.
+
+    This call regenerates every file summary that is marked as out of date, then
+    rebuilds the project-level overview from scratch.  It may take a while on
+    large codebases — prefer ``refresh_file_summary`` when you only care about
+    one specific file.
+    """
+    if _semantic_indexer is None:
+        return {"error": "Semantic indexing is not available. "
+                         "Ensure an LLM provider (Ollama / OpenAI) is configured."}
+    return _semantic_indexer.refresh_project_summary()
+
+
 # ── Entry point ──────────────────────────────────────────────────────────────
 
 def run_server(clients: dict[Language, LSP.LSPClient], root_dir: str, semantic_indexer=None, host: str = "127.0.0.1", port: int = 6789) -> None:

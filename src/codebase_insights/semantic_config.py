@@ -57,6 +57,11 @@ _DEFAULT_CONFIG: dict = {
         "concurrency": 16,
         "batch_size": 16,
         "min_ref_count": 3,
+        # Number of files whose symbol structure must change before file/project
+        # summaries are automatically regenerated during watchdog updates.
+        # Set to 1 to regenerate on every single change (original behaviour).
+        # Set to 0 to disable auto-regeneration entirely (use MCP refresh tools).
+        "summary_update_threshold": 5,
     },
     "ranking": {
         "default_penalty": 1.0,
@@ -244,6 +249,17 @@ def semantic_batch_size() -> int:
 
 def semantic_min_ref_count() -> int:
     return int(get_config().get("semantic", {}).get("min_ref_count", 1))
+
+
+def semantic_summary_update_threshold() -> int:
+    """Return the number of structurally-changed files required to trigger
+    an automatic file/project summary regeneration during watchdog updates.
+
+    0 = never auto-regenerate (use refresh MCP tools only)
+    1 = regenerate on every single change (original behaviour)
+    N = accumulate N changes before regenerating (default: 5)
+    """
+    return int(get_config().get("semantic", {}).get("summary_update_threshold", 5))
 
 
 # ---------------------------------------------------------------------------
