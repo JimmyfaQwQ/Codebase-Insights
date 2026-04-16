@@ -153,22 +153,72 @@
   },
   {
     "type": "file",
-    "query": "WebSocket server managing phone connections from the desktop app",
+    "query": "WebSocket server for desktop-mobile pairing and routing AI requests",
     "expected": "ws-server.ts"
   },
   {
     "type": "file",
-    "query": "waifu personality and system prompt builder",
+    "query": "waifu personality traits and system prompt assembly from relationship context",
     "expected": "personality.ts"
   },
   {
     "type": "file",
-    "query": "secure credential storage implementations for desktop and mobile",
+    "query": "platform-agnostic secure storage with desktop, mobile, and test keychain adapters",
     "expected": "keystore.ts"
   },
   {
     "type": "file",
-    "query": "creating and restoring backup snapshots of the runtime data",
+    "query": "BackupManager creating and restoring timestamped JSON snapshots of runtime data",
     "expected": "backups.js"
+  },
+  {
+    "type": "file",
+    "query": "IPC bridge registering shell command execution and web search handlers for the desktop agent",
+    "expected": "executor.ts"
+  },
+  {
+    "type": "file",
+    "query": "Spotify playback control and current track retrieval via IPC on macOS",
+    "expected": "spotify.ts"
+  },
+  {
+    "type": "file",
+    "query": "cross-platform shell detection and PowerShell command wrapping for desktop terminal",
+    "expected": "terminal-shell.ts"
+  },
+  {
+    "type": "file",
+    "query": "Prometheus-compatible metrics tracking HTTP request volumes, latencies, and backup counts",
+    "expected": "metrics.js"
+  },
+  {
+    "type": "file",
+    "query": "HTTP server routing requests to backup operations and plugin services at runtime",
+    "expected": "server.js"
+  },
+  {
+    "type": "file",
+    "query": "mobile WebSocket connection hook for pairing and communicating with a desktop over local network",
+    "expected": "useWsConnection.ts"
+  },
+  {
+    "type": "file",
+    "query": "mobile QR code scanner extracting pairing token and WebSocket URL",
+    "expected": "scan.tsx"
+  },
+  {
+    "type": "file",
+    "query": "Vue composable managing stored API keys for multiple AI service providers in renderer",
+    "expected": "use-key-manager.ts"
+  },
+  {
+    "type": "file",
+    "query": "internationalization composable with locale persistence and reactive translation function",
+    "expected": "use-i18n.ts"
+  },
+  {
+    "type": "file",
+    "query": "agent tool dispatcher routing terminal commands, web search, and media controls from renderer",
+    "expected": "agent-tools.ts"
   }
 ]

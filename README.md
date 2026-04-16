@@ -52,18 +52,18 @@ Benchmark results below are from **codebase-insights v0.2.4** on a real Electron
 
 | Metric | Symbol search | File search |
 |---|---|---|
-| **Hit@1** | **96.4%** (27/28) | **100%** (5/5) |
-| **Hit@3** | **100%** (28/28) | **100%** (5/5) |
-| **Hit@5** | **100%** (28/28) | **100%** (5/5) |
-| **Keyword baseline Hit@1** | 1/28 (3.6%) | — |
+| **Hit@1** | **96.4%** (27/28) | **93.3%** (14/15) |
+| **Hit@3** | **100%** (28/28) | **100%** (14/15) |
+| **Hit@5** | **100%** (28/28) | **100%** (14/15) |
+| **Keyword baseline Hit@1** | 13/28 (46.4%) | — |
 
 ### Progress since v0.1.1
 
-| Version | Symbol Hit@1 | Symbol Hit@3 | File Hit@1 |
-|---|---|---|---|
-| v0.1.1 | 68.4% | 89.5% | — |
-| v0.2.3 | 29.4% (strict queries) | 76.5% | 33.3% |
-| **v0.2.4** | **96.4%** | **100%** | **100%** |
+| Version | Symbol Hit@1 | Symbol Hit@3 | File Hit@1 | File Hit@5 |
+|---|---|---|---|---|
+| v0.1.1 | 68.4% | 89.5% | — | — |
+| v0.2.3 | 29.4% (strict queries) | 76.5% | 33.3% | - |
+| **v0.2.4** | **96.4%** | **100%** | **93.3%** | **100%** |
 
 > v0.2.3 introduced harder, more realistic benchmark queries (longer natural-language descriptions instead of near-exact symbol names). The v0.2.4 ranking improvements brought Hit@1 from 29.4% back to 96.4% on these harder queries.
 
