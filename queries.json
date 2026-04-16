@@ -1,0 +1,108 @@
+[
+  {
+    "_comment": "--- STRUCTURAL: well-known abstractions ---",
+    "type": "symbol",
+    "query": "abstract base class for AI provider implementations",
+    "expected": "BaseAIProvider"
+  },
+  {
+    "type": "symbol",
+    "query": "AI provider interface contract with chat and stream methods",
+    "expected": "AIProvider"
+  },
+  {
+    "type": "symbol",
+    "query": "chat request sent to an LLM model",
+    "expected": "ChatRequest"
+  },
+  {
+    "type": "symbol",
+    "query": "streaming response chunk from LLM",
+    "expected": "StreamChunk"
+  },
+  {
+    "type": "symbol",
+    "query": "centralized registry for registering and dispatching tools",
+    "expected": "ToolRegistry"
+  },
+  {
+    "_comment": "--- DOMAIN: waifu / personality ---",
+    "type": "symbol",
+    "query": "waifu personality traits on a numerical scale",
+    "expected": "WaifuPersonalityTraits"
+  },
+  {
+    "type": "symbol",
+    "query": "waifu companion data model with name and avatar",
+    "expected": "Waifu"
+  },
+  {
+    "type": "symbol",
+    "query": "build the complete system prompt for a waifu interaction",
+    "expected": "buildSystemPrompt"
+  },
+  {
+    "type": "symbol",
+    "query": "relationship and context used to construct waifu system prompt",
+    "expected": "SystemPromptContext"
+  },
+  {
+    "_comment": "--- BEHAVIOURAL: IPC / platform glue ---",
+    "type": "symbol",
+    "query": "platform-native adapter for storing encrypted API keys",
+    "expected": "KeystoreAdapter"
+  },
+  {
+    "type": "symbol",
+    "query": "convert messages to OpenAI-compatible message format",
+    "expected": "convertToOpenAIMessages"
+  },
+  {
+    "type": "symbol",
+    "query": "options passed when creating a new AI provider instance",
+    "expected": "CreateProviderOptions"
+  },
+  {
+    "_comment": "--- BEHAVIOURAL: WebSocket protocol ---",
+    "type": "symbol",
+    "query": "WebSocket message envelope for phone to desktop communication",
+    "expected": "WSMessage"
+  },
+  {
+    "type": "symbol",
+    "query": "mobile initiates pairing with desktop over WebSocket",
+    "expected": "PairRequestPayload"
+  },
+  {
+    "type": "symbol",
+    "query": "payload sent when a streaming LLM token arrives over WebSocket",
+    "expected": "StreamChunkPayload"
+  },
+  {
+    "_comment": "--- BEHAVIOURAL: storage ---",
+    "type": "symbol",
+    "query": "SQLite-backed persistent chat conversation storage on desktop",
+    "expected": "DesktopSQLiteChatStore"
+  },
+  {
+    "type": "symbol",
+    "query": "context provided to a tool when it is executed by the agent",
+    "expected": "ToolExecutionContext"
+  },
+  {
+    "_comment": "--- FILE queries (3) ---",
+    "type": "file",
+    "query": "core AI message and provider type definitions",
+    "expected": "types.ts"
+  },
+  {
+    "type": "file",
+    "query": "WebSocket server managing phone connections from the desktop app",
+    "expected": "ws-server.ts"
+  },
+  {
+    "type": "file",
+    "query": "waifu personality and system prompt builder",
+    "expected": "personality.ts"
+  }
+]

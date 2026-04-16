@@ -270,15 +270,21 @@ Output files:
 | D: New file | | | | | |
 | Full rebuild | | | | | |
 
-### Cleanup after report is finalised
+### Finalisation steps (do not skip)
 
-Once the report is written and committed, remove the raw benchmark artifacts:
+After Phase 7 generates the report, complete these steps in order:
+
+1. **Tick every checklist item** in `docs/benchmark-vX.Y.Z.md`. The report contains a `## Completion Checklist` section with `- [ ]` items — replace each `- [ ]` with `- [x]` once verified.
+
+2. **Commit the report** (`git add docs/benchmark-vX.Y.Z.md && git commit`).
+
+3. **Delete `benchmark_results/`** after the commit — it holds large log files and binary JSON that must not be committed:
 
 ```powershell
 Remove-Item -Recurse -Force benchmark_results\
 ```
 
-`benchmark_results/` should not be committed — it contains large log files and binary JSON. The report markdown is the permanent record.
+The report markdown is the permanent record. `benchmark_results/` is a local scratch directory only.
 
 ---
 
@@ -294,4 +300,6 @@ Remove-Item -Recurse -Force benchmark_results\
 - [ ] Bugs found are documented with root cause + fix
 - [ ] Report written with all required sections
 - [ ] Test edits reverted in target repo
+- [ ] All `- [ ]` items in the report markdown ticked to `- [x]`
+- [ ] Report committed to git
 - [ ] `benchmark_results/` deleted after report is committed
