@@ -55,6 +55,7 @@ Benchmark results below are from **codebase-insights v0.2.4** on a real Electron
 | **Hit@1** | **96.4%** (27/28) | **100%** (5/5) |
 | **Hit@3** | **100%** (28/28) | **100%** (5/5) |
 | **Hit@5** | **100%** (28/28) | **100%** (5/5) |
+| **Est. tokens saved vs keyword** | **~14,250** total (~509/query) | — |
 
 ### Progress since v0.1.1
 
@@ -66,16 +67,18 @@ Benchmark results below are from **codebase-insights v0.2.4** on a real Electron
 
 > v0.2.3 introduced harder, more realistic benchmark queries (longer natural-language descriptions instead of near-exact symbol names). The v0.2.4 ranking improvements brought Hit@1 from 29.4% back to 96.4% on these harder queries.
 
-### Semantic search vs keyword search
+### Semantic search vs keyword baseline
 
-The benchmark includes queries where **semantic search succeeds but keyword search fails**:
+The benchmark simulates a **context-unaware AI agent** that generates keyword search terms from the same NL queries, then calls \query_symbols\. On 28 queries, keyword search found zero results for 18 of them and returned wrong results on the rest.
 
-| Query | Expected | Semantic | Keyword |
-|---|---|:---:|:---:|
-| *"AI provider interface contract with chat and stream methods"* | `AIProvider` | ✓ | ✗ |
-| *"look up localized text strings by translation key"* | `t` | ✓ | ✗ |
+| Query | Expected | Semantic | KW agent tried | Keyword |
+|---|---|:---:|---|:---:|
+| *“AI provider interface contract with chat and stream methods”* | \AIProvider\ | ✓ | \interface+provider\ | ✗ |
+| *“look up localized text strings by translation key”* | \	\ | ✓ | \	ranslation+localized\ | ✗ |
+| *“platform-native adapter for storing encrypted API keys”* | \KeystoreAdapter\ | ✓ | \ncrypted+platform\ | ✗ |
+| *“SQLite-backed persistent chat conversation storage”* | \DesktopSQLiteChatStore\ | ✓ | \conversation+persistent\ | ✗ |
 
-These demonstrate the advantage of hybrid vector + keyword ranking over pure lexical matching: semantic search finds `AIProvider` even when keyword search returns `AzureOpenAIProvider` instead, and retrieves the single-character translation function `t` from a natural-language description — something keyword search fundamentally cannot do.
+**Estimated tokens saved: ~14,250** across 28 queries (~509 per query on average) — because semantic search returns the right answer at ⌛ 1 instead of forcing the agent to scan through a noisy result list.
 
 ### Build performance (v0.1.1)
 

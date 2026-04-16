@@ -800,6 +800,106 @@ def phase3_incremental(
 
 
 # ---------------------------------------------------------------------------
+# Keyword baseline — LLM-simulated agent keyword extraction
+# ---------------------------------------------------------------------------
+
+# Tokens-saved model: assume each result entry shown to an agent costs this
+# many tokens (name + kind + path + short summary in context).
+_TOKENS_PER_RESULT = 150
+
+_KW_STOPWORDS = frozenset({
+    "a", "an", "the", "and", "or", "for", "with", "that", "this", "its",
+    "of", "in", "on", "by", "to", "from", "is", "are", "was", "be", "into",
+    "when", "after", "before", "until", "each", "all", "any", "more",
+    "used", "uses", "use", "given", "via", "how", "what", "which", "where",
+})
+
+
+def _heuristic_keywords(query: str) -> list[str]:
+    """Extract the most discriminative tokens from a NL query as fallback."""
+    import re
+    tokens = re.split(r'\W+', query.lower())
+    tokens = [t for t in tokens if len(t) >= 4 and t not in _KW_STOPWORDS]
+    # Sort by length descending — longer tokens are more specific
+    tokens.sort(key=len, reverse=True)
+    return tokens[:2] if tokens else [query.split()[0]]
+
+
+def _llm_generate_keywords(query: str, target_repo: str) -> list[str]:
+    """Ask the configured LLM to generate keyword search terms from a NL query.
+
+    Simulates what a naive AI agent would type into a symbol name-search tool
+    when it has no prior knowledge of the codebase.  Falls back to heuristic
+    extraction if the LLM is unavailable.
+    """
+    try:
+        import tomllib
+        toml_path = Path(target_repo) / ".codebase-insights.toml"
+        if not toml_path.exists():
+            return _heuristic_keywords(query)
+        with open(toml_path, "rb") as f:
+            cfg = tomllib.load(f)
+
+        provider = cfg.get("chat", {}).get("provider", "ollama")
+        prompt = (
+            "You are a developer searching a codebase using a symbol name-search tool. "
+            "The tool accepts short keyword terms and matches them against symbol names.\n"
+            "Given the description below, output 1-2 short search keywords (e.g. symbol "
+            "names, technical terms, or camelCase fragments) that you would try first.\n"
+            "Output ONLY the keywords, one per line, no explanation.\n\n"
+            f"Description: {query}"
+        )
+
+        if provider == "openai":
+            oa_cfg = cfg.get("chat", {}).get("openai", {})
+            base_url = oa_cfg.get("base_url") or os.environ.get("OPENAI_BASE_URL")
+            api_key  = os.environ.get("OPENAI_API_KEY", "placeholder")
+            model    = oa_cfg.get("model", "gpt-4o-mini")
+            import openai as _oa
+            client = _oa.OpenAI(api_key=api_key, base_url=base_url)
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=40,
+                temperature=0,
+            )
+            text = resp.choices[0].message.content or ""
+        else:
+            # Ollama
+            import urllib.request
+            ol_cfg = cfg.get("chat", {}).get("ollama", {})
+            base_url = (ol_cfg.get("base_url") or "http://localhost:11434").rstrip("/")
+            model    = ol_cfg.get("model", "qwen2.5")
+            payload  = json.dumps({
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "options": {"temperature": 0, "num_predict": 40},
+            }).encode()
+            req = urllib.request.Request(
+                f"{base_url}/api/chat",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read())
+            text = data.get("message", {}).get("content", "")
+
+        # Parse output — one keyword per line, strip punctuation
+        import re
+        keywords = [
+            re.sub(r'[^\w]', '', line.strip()).lower()
+            for line in text.strip().splitlines()
+            if line.strip()
+        ]
+        keywords = [k for k in keywords if len(k) >= 2][:2]
+        return keywords if keywords else _heuristic_keywords(query)
+
+    except Exception:
+        return _heuristic_keywords(query)
+
+
+# ---------------------------------------------------------------------------
 # Phase 4 — Retrieval quality (query execution; scoring is manual)
 # ---------------------------------------------------------------------------
 
@@ -897,13 +997,16 @@ def phase4_retrieval(target_repo: str, queries_file: str | None, state: dict) ->
             # Sort by score descending; missing/None scores go last
             sem_top5.sort(key=lambda h: h.get("score") or 0, reverse=True)
 
-            # Keyword baseline — query_symbols with expected symbol name
+            # Keyword baseline — simulate a naive agent generating search terms
+            # from the NL query (no knowledge of the codebase).
             kw_top5: list[dict] = []
-            kw_keyword = expected.strip() if expected.strip() else None
-            if kw_keyword:
+            kw_keywords = _llm_generate_keywords(query_text, target_repo)
+            kw_keyword   = kw_keywords[0] if kw_keywords else None
+            if kw_keywords:
                 kw_raw = call_tool("query_symbols", {
-                    "name_query": kw_keyword,
-                    "kinds": ["Class", "Interface", "Function", "Method", "Constructor"],
+                    "name_query": kw_keywords[0],
+                    "kinds": ["Class", "Interface", "Function", "Method", "Constructor",
+                              "TypeAlias", "Enum"],
                     "limit": 5,
                 })
                 kw_hits = kw_raw.get("symbols", kw_raw.get("result", []))
@@ -922,6 +1025,18 @@ def phase4_retrieval(target_repo: str, queries_file: str | None, state: dict) ->
             hit3 = (expected in sem_names[:3]) if expected else None
             hit5 = (expected in sem_names[:5]) if expected else None
 
+            # Rank of expected in semantic results (1-based; 0 = not found in top-5)
+            sem_rank = next((i + 1 for i, h in enumerate(sem_top5)
+                             if h["name"] == expected), 0) if expected else 0
+
+            # Tokens-saved estimate vs keyword baseline:
+            #   Keyword agent reads ALL returned results to find the right one.
+            #   Semantic agent stops at the position where the right answer appears.
+            kw_result_count = len(kw_top5)
+            sem_reads  = sem_rank if sem_rank > 0 else (len(sem_top5) + 1)
+            kw_reads   = kw_result_count if kw_result_count > 0 else 5
+            tokens_saved = (kw_reads - sem_reads) * _TOKENS_PER_RESULT
+
             entry = {
                 "type":          "symbol",
                 "query":         query_text,
@@ -929,6 +1044,10 @@ def phase4_retrieval(target_repo: str, queries_file: str | None, state: dict) ->
                 "semantic_top5": sem_top5,
                 "keyword_top5":  kw_top5,
                 "keyword":       kw_keyword,
+                "kw_keywords":   kw_keywords,
+                "sem_rank":      sem_rank,
+                "kw_result_count": kw_result_count,
+                "tokens_saved":  tokens_saved,
                 "hit1":          hit1,
                 "hit3":          hit3,
                 "hit5":          hit5,
@@ -945,12 +1064,14 @@ def phase4_retrieval(target_repo: str, queries_file: str | None, state: dict) ->
             elif "error" in raw:
                 print(f"    Semantic ERROR : {raw['error']}")
 
+            kw_terms_str = "+".join(kw_keywords) if kw_keywords else "?"
             if kw_top5:
                 kw_names = ", ".join(h["name"] for h in kw_top5[:3])
                 match = "✓" if any(h["name"] == expected for h in kw_top5) else "✗"
-                print(f"    Keyword [{kw_keyword}]: {kw_names} {match}")
-            elif kw_keyword:
-                print(f"    Keyword [{kw_keyword}]: no results")
+                saved_str = f"  tokens_saved≈{tokens_saved:+d}" if tokens_saved != 0 else ""
+                print(f"    Keyword [{kw_terms_str}]: {kw_names} {match}{saved_str}")
+            elif kw_keywords:
+                print(f"    Keyword [{kw_terms_str}]: no results")
 
     # Aggregate auto-computed scores
     def _pct(lst: list[dict], key: str) -> str:
@@ -959,6 +1080,8 @@ def phase4_retrieval(target_repo: str, queries_file: str | None, state: dict) ->
             return "n/a"
         hits = sum(1 for q in scored if q[key] is True)
         return f"{hits}/{len(scored)} ({100*hits/len(scored):.1f}%)"
+
+    total_tokens_saved = sum(q.get("tokens_saved", 0) for q in sym_results)
 
     state["retrieval"] = {
         "symbol_queries": sym_results,
@@ -969,8 +1092,10 @@ def phase4_retrieval(target_repo: str, queries_file: str | None, state: dict) ->
         "file_hit_at_1":   _pct(file_results, "hit1"),
         "file_hit_at_3":   _pct(file_results, "hit3"),
         "file_hit_at_5":   _pct(file_results, "hit5"),
+        "estimated_tokens_saved": total_tokens_saved,
     }
     print(f"  Symbol queries: {len(sym_results)}, file queries: {len(file_results)}")
+    print(f"  Estimated tokens saved vs keyword baseline: ≈{total_tokens_saved:,}")
 
 def phase5_lsp_navigation(target_repo: str, state: dict) -> None:
     print("\n=== Phase 5: LSP navigation ===")
@@ -1293,27 +1418,38 @@ def phase7_report(target_repo: str, version: str, output_dir: Path, state: dict)
             hit3 = [q for q in sym_data if q.get("hit3") is True]
             hit5 = [q for q in sym_data if q.get("hit5") is True]
             total_sym = len(sym_data)
-            w("### 6.1 Symbol Search (`semantic_search` + `query_symbols` baseline)")
+            total_tokens_saved = retrieval.get("estimated_tokens_saved",
+                sum(q.get("tokens_saved", 0) for q in sym_data))
+            w("### 6.1 Symbol Search (`semantic_search` vs keyword baseline)")
+            w("")
+            w("> **Keyword baseline**: a context-unaware LLM agent generates 1-2 search terms from")
+            w("> the natural-language query (no codebase knowledge), then calls `query_symbols`.")
+            w("> Tokens-saved model: each result an agent must inspect ≈ 150 tokens.")
+            w("> Semantic search stops at the correct result; keyword agent scans all returned results.")
             w("")
             if any(q.get("hit1") is not None for q in sym_data):
-                w(f"**Hit@1:** {len(hit1)}/{total_sym} ({100*len(hit1)/total_sym:.1f}%)  ")
-                w(f"**Hit@3:** {len(hit3)}/{total_sym} ({100*len(hit3)/total_sym:.1f}%)  ")
-                w(f"**Hit@5:** {len(hit5)}/{total_sym} ({100*len(hit5)/total_sym:.1f}%)")
+                w(f"**Semantic Hit@1:** {len(hit1)}/{total_sym} ({100*len(hit1)/total_sym:.1f}%)  ")
+                w(f"**Semantic Hit@3:** {len(hit3)}/{total_sym} ({100*len(hit3)/total_sym:.1f}%)  ")
+                w(f"**Semantic Hit@5:** {len(hit5)}/{total_sym} ({100*len(hit5)/total_sym:.1f}%)")
+                avg_saved = total_tokens_saved / total_sym if total_sym else 0
+                w(f"**Est. tokens saved vs keyword:** ≈{total_tokens_saved:,} total  "
+                  f"(≈{avg_saved:.0f} avg per query)")
             else:
                 w(f"Executed {total_sym} symbol queries. Score manually in `benchmark_state.json`, then re-run `--phases 7`.")
             w("")
-            w("| # | Query | Expected | Semantic top-1 | Keyword hit | Hit@1 | Hit@3 | Hit@5 |")
-            w("|---|---|---|---|:---:|:---:|:---:|:---:|")
+            w("| # | Query | Expected | Semantic #1 | KW terms | KW #1 | Sem✓ | Tokens↓ |")
+            w("|---|---|---|---|---|---|:---:|---:|")
             for i, q in enumerate(sym_data, 1):
                 sem5 = q.get("semantic_top5", q.get("top5", []))
                 sem_top1 = sem5[0].get("name", "?") if sem5 and isinstance(sem5[0], dict) else "?"
                 kw5 = q.get("keyword_top5", [])
+                kw_top1 = kw5[0].get("name", "?") if kw5 else "—"
                 exp = q.get("expected", "")
-                kw_hit = "✓" if any(h.get("name") == exp for h in kw5) else ("—" if not exp else "✗")
+                kw_terms = "+".join(q.get("kw_keywords") or ([q.get("keyword")] if q.get("keyword") else []))
                 h1 = "?" if q.get("hit1") is None else ("✓" if q["hit1"] else "✗")
-                h3 = "?" if q.get("hit3") is None else ("✓" if q["hit3"] else "✗")
-                h5 = "?" if q.get("hit5") is None else ("✓" if q["hit5"] else "✗")
-                w(f"| {i} | {q.get('query', '')[:48]} | `{exp}` | `{sem_top1}` | {kw_hit} | {h1} | {h3} | {h5} |")
+                ts = q.get("tokens_saved")
+                ts_str = f"{ts:+d}" if ts is not None else "?"
+                w(f"| {i} | {q.get('query', '')[:44]} | `{exp}` | `{sem_top1}` | `{kw_terms}` | `{kw_top1}` | {h1} | {ts_str} |")
             w("")
 
         # ── File queries ──────────────────────────────────────────────────
