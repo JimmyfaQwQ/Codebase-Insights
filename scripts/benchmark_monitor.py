@@ -76,11 +76,20 @@ def _get_process_memory_mb(proc: psutil.Process) -> float:
 
 
 def _get_process_cpu_pct(proc: psutil.Process) -> float:
-    """Return combined CPU % for a process tree."""
+    """Return combined CPU % for a process tree.
+
+    Note: CPU-intensive work performed by out-of-process services (e.g. Ollama
+    running LLM inference on a separate GPU/CPU) is NOT captured here because
+    those processes are not children of ``codebase-insights``.  Expect near-0%
+    readings during LLM-heavy phases when using Ollama.
+    """
     try:
         total = proc.cpu_percent(interval=None)
         for child in proc.children(recursive=True):
             try:
+                # Initialise the baseline on first contact with each new child
+                # so the next sample returns a real reading rather than 0.0.
+                child.cpu_percent(interval=None)
                 total += child.cpu_percent(interval=None)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass

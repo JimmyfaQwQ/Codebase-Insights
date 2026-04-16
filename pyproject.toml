@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "codebase-insights"
-version = "0.2.0"
+version = "0.2.1"
 description = "LSP-powered code intelligence with AI semantic search, exposed as an MCP server"
 readme = "README.md"
 license = { file = "LICENSE" }

@@ -594,6 +594,7 @@ class WorkspaceIndexer:
                             threading.Thread(
                                 target=self._semantic.index_symbols,
                                 args=(sym_ids,),
+                                kwargs={"debounce": True},
                                 daemon=True,
                                 name="SemanticIndexer-incremental",
                             ).start()

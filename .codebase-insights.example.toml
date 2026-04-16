@@ -38,3 +38,4 @@ index_kinds = [
 concurrency = 16   # parallel LLM requests per batch (increase for OpenAI, keep low for Ollama)
 batch_size  = 16  # symbols processed per round
 min_ref_count = 5  # skip symbols referenced fewer than this many times
+                   # set to 0 to index all symbols, including new files with no cross-references yet

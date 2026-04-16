@@ -52,7 +52,9 @@ _CAMEL_RE = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')
 _TOKEN_SPLIT_RE = re.compile(r'[^a-z0-9]+')
 
 # Hybrid scoring: keyword vs. vector blend (0 = pure vector, 1 = pure keyword)
-_KEYWORD_WEIGHT = 0.35
+# Raised from 0.35 → 0.45: keyword name-matching is a strong signal (benchmark v0.2.0
+# showed query_symbols exact-match dominated; boosting the keyword weight improves Hit@1).
+_KEYWORD_WEIGHT = 0.45
 # Diversity: each extra result from the same file is penalised by this factor
 _SAME_FILE_DECAY = 0.85
 # Symbols with the same name appearing multiple times (e.g. the same helper
@@ -118,6 +120,25 @@ def _why_matched(name: str, kind: str, container: str, file_path: str, summary: 
             parts.append(f"— {first}")
     return " ".join(parts)
 
+
+# Maximum number of top-level exported symbols to include in the file embedding
+# text.  Including key symbol names improves file search when multiple files share
+# the same generic name (e.g. several "types.ts" across packages).
+_MAX_FILE_EMBED_SYMBOLS = 8
+
+
+def _build_file_embed_text(rel_path: str, summary: str, top_symbols: list[str]) -> str:
+    """Build the text to embed for a file-level vector store entry.
+
+    Enriches the basic ``[File] path — summary`` format with the names of the
+    file's top-level exported symbols so that queries mentioning specific symbol
+    names surface the right file even when the summary is generic.
+    """
+    text = f"[File] {rel_path} — {summary}"
+    if top_symbols:
+        text += f" [exports: {', '.join(top_symbols[:_MAX_FILE_EMBED_SYMBOLS])}]"
+    return text
+
 _SUMMARY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS symbol_summaries (
     symbol_id    INTEGER PRIMARY KEY REFERENCES symbols(id) ON DELETE CASCADE,
@@ -151,6 +172,12 @@ CREATE TABLE IF NOT EXISTS project_summary_sources (
     summary_hash    TEXT NOT NULL
 );
 """
+
+# Debounce window for project summary regeneration during incremental updates.
+# When multiple files are edited in rapid succession (e.g. a Save-All), each
+# watchdog event would otherwise trigger a 100-130s project summary pass.
+# The debounce coalesces all edits within this window into a single pass.
+_PROJECT_SUMMARY_DEBOUNCE_S = 30.0
 
 # Fraction of files that may change before falling back to full regeneration
 _INCREMENTAL_THRESHOLD = 0.3
@@ -226,6 +253,8 @@ class SemanticIndexer:
         self._batch_size = semantic_batch_size()
         self._min_ref_count = semantic_min_ref_count()
         self._lock = threading.Lock()
+        self._project_summary_timer: threading.Timer | None = None
+        self._project_summary_timer_lock = threading.Lock()
 
         # Ranking config (loaded once at init, no global mutable state)
         self._suffix_penalties = ranking_file_suffix_penalties()
@@ -357,14 +386,62 @@ class SemanticIndexer:
         return ref_count_map
 
     # ------------------------------------------------------------------
+    # Project summary debounce helpers
+    # ------------------------------------------------------------------
+
+    def _schedule_project_summary(self, debounce: bool = False) -> None:
+        """Trigger project summary regeneration, optionally after a debounce delay.
+
+        When ``debounce=True`` (incremental/watchdog updates), the call is
+        deferred by ``_PROJECT_SUMMARY_DEBOUNCE_S`` seconds.  If another edit
+        arrives within the window the timer is reset, coalescing all changes
+        into a single project-summary pass.
+
+        When ``debounce=False`` (initial full rebuild), the project summary is
+        generated immediately in the calling thread.
+        """
+        if not debounce:
+            self._index_project_summary()
+            return
+        with self._project_summary_timer_lock:
+            if self._project_summary_timer is not None:
+                self._project_summary_timer.cancel()
+            self._project_summary_timer = threading.Timer(
+                _PROJECT_SUMMARY_DEBOUNCE_S, self._run_debounced_project_summary
+            )
+            self._project_summary_timer.daemon = True
+            self._project_summary_timer.start()
+            print(
+                f"[Semantic] Project summary scheduled in "
+                f"{_PROJECT_SUMMARY_DEBOUNCE_S:.0f}s (debounce).",
+                flush=True,
+            )
+
+    def _run_debounced_project_summary(self) -> None:
+        """Timer callback: clear the pending timer reference then run the summary."""
+        with self._project_summary_timer_lock:
+            self._project_summary_timer = None
+        try:
+            self._index_project_summary()
+        except Exception as e:
+            print(f"[Semantic] Error in debounced project summary: {e}")
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def index_symbols(self, symbol_ids: list[int] | None = None):
+    def index_symbols(self, symbol_ids: list[int] | None = None, debounce: bool = False):
         """
         Generate summaries and embeddings for symbols that need processing.
         If symbol_ids is None, processes all eligible symbols that are missing
         or have stale summaries.
+
+        Args:
+            symbol_ids: Specific symbol IDs to process, or None for a full pass.
+            debounce: When True, project summary regeneration is deferred by
+                      ``_PROJECT_SUMMARY_DEBOUNCE_S`` seconds so that rapid
+                      successive edits (watchdog events) are coalesced into one
+                      expensive LLM call instead of one per file.
         """
         with self._lock:
             try:
@@ -404,7 +481,7 @@ class SemanticIndexer:
                     except sqlite3.Error:
                         unsummarised = []
                     self._generate_file_summaries(list(set(affected_files) | set(unsummarised)))
-                self._index_project_summary()
+                self._schedule_project_summary(debounce=debounce)
             except Exception as e:
                 print(f"[Semantic] Error during indexing: {e}")
             # ── DB size snapshot ────────────────────────────────────────────
@@ -434,12 +511,12 @@ class SemanticIndexer:
             except Exception as e:
                 print(f"[Semantic] Error removing file {file_path}: {e}")
                 return
-        # Trigger project summary regeneration outside the lock so LLM calls
-        # don't block concurrent indexing operations.
+        # Debounce: file removal is a watchdog event — coalesce with other rapid
+        # changes rather than immediately triggering a 100-130s project summary pass.
         try:
-            self._index_project_summary()
+            self._schedule_project_summary(debounce=True)
         except Exception as e:
-            print(f"[Semantic] Error regenerating project summary after file removal: {e}")
+            print(f"[Semantic] Error scheduling project summary after file removal: {e}")
 
     def clear_semantic(self):
         """Wipe all summaries and the ChromaDB store so everything is re-generated."""
@@ -584,8 +661,32 @@ class SemanticIndexer:
                             seen[fp] = r["summary"]
                     deduped_rows = list(seen.items())  # [(abs_path, summary), ...]
 
+                    # Query top-level exported symbols for embed text enrichment
+                    con_syms = sqlite3.connect(self._db_path, check_same_thread=False)
+                    con_syms.row_factory = sqlite3.Row
+                    try:
+                        sym_rows = con_syms.execute(
+                            "SELECT file_path, name FROM symbols "
+                            "WHERE (container_name IS NULL OR container_name = '') "
+                            "ORDER BY file_path, def_line"
+                        ).fetchall()
+                    finally:
+                        con_syms.close()
+                    rebuild_top_syms: dict[str, list[str]] = {}
+                    for sr in sym_rows:
+                        fp_key = canonical_path(sr["file_path"])
+                        bucket = rebuild_top_syms.setdefault(fp_key, [])
+                        if len(bucket) < _MAX_FILE_EMBED_SYMBOLS and re.search(
+                            r'[a-zA-Z_$]', sr["name"] or ""
+                        ):
+                            bucket.append(sr["name"])
+
                     file_texts = [
-                        f"[File] {_safe_relpath(fp, self._root_dir)} — {summary}"
+                        _build_file_embed_text(
+                            _safe_relpath(fp, self._root_dir),
+                            summary,
+                            rebuild_top_syms.get(canonical_path(fp), []),
+                        )
                         for fp, summary in deduped_rows
                     ]
                     file_metadatas = [
@@ -803,13 +904,20 @@ class SemanticIndexer:
     def search_files(self, query: str, limit: int = 10) -> dict:
         """Search files by natural language query using AI-generated file summaries.
 
-        Returns files ranked by semantic similarity to the query, each with
-        the file path and a summary of the file's purpose.
+        Returns files ranked by a hybrid of semantic similarity and filename keyword
+        matching, each entry with the file path and a summary of the file's purpose.
+
+        Over-fetches ``limit * candidate_multiplier`` candidates from the vector
+        store and re-ranks them by blending vector similarity with a keyword score
+        derived from the filename stem and parent directory tokens.  This mirrors
+        the symbol search strategy and significantly improves Hit@1 for file queries
+        that contain the target filename or a recognisable word from its path.
         """
         limit = min(max(1, limit), 100)
+        fetch_k = limit * self._candidate_multiplier
         _t0 = time.perf_counter()
         try:
-            raw_results = self._file_vectorstore.similarity_search_with_score(query, k=limit)
+            raw_results = self._file_vectorstore.similarity_search_with_score(query, k=fetch_k)
         except Exception as e:
             return {"error": f"File semantic search failed: {e}"}
 
@@ -822,20 +930,42 @@ class SemanticIndexer:
             )
             return {"result": [], "count": 0}
 
-        out = []
+        # Hybrid re-ranking: blend vector similarity with filename keyword score
+        scored: list[dict] = []
         for doc, distance in raw_results:
             meta = doc.metadata
-            out.append({
-                "file":    meta.get("file_path", ""),
-                "rel_path": meta.get("rel_path", os.path.basename(meta.get("file_path", ""))),
-                "summary": meta.get("summary", ""),
-                "score":   round(float(distance), 4),
+            file_path = meta.get("file_path", "")
+            rel_path = meta.get("rel_path", os.path.basename(file_path))
+            summary = meta.get("summary", "")
+
+            vector_sim = 1.0 / (1.0 + float(distance))
+
+            # Keyword score: match query tokens against filename stem and parent dir
+            basename = os.path.basename(file_path)
+            stem = os.path.splitext(basename)[0]
+            parent = os.path.dirname(rel_path).replace("\\", "/")
+            path_score = self._compute_name_relevance(query, stem, parent)
+
+            hybrid = (1.0 - _KEYWORD_WEIGHT) * vector_sim + _KEYWORD_WEIGHT * path_score
+
+            scored.append({
+                "file":     file_path,
+                "rel_path": rel_path,
+                "summary":  summary,
+                "score":    round(float(distance), 4),
+                "_hybrid":  hybrid,
             })
+
+        scored.sort(key=lambda x: x["_hybrid"], reverse=True)
+        final = scored[:limit]
+        for item in final:
+            item.pop("_hybrid", None)
+
         print(
-            f"[BENCHMARK:FILE_SEARCH] latency_ms={latency_ms} results={len(out)}",
+            f"[BENCHMARK:FILE_SEARCH] latency_ms={latency_ms} results={len(final)}",
             flush=True,
         )
-        return {"result": out, "count": len(out)}
+        return {"result": final, "count": len(final)}
 
     # ------------------------------------------------------------------
     # Internal: indexing pipeline
@@ -926,6 +1056,8 @@ class SemanticIndexer:
 
         messages_list: list[list] = []
         pending_files: list[tuple[str, str]] = []   # (file_path, structural_hash)
+        # Maps norm → top-level exported symbol names for embed text enrichment
+        file_top_syms: dict[str, list[str]] = {}
 
         try:
             for file_path in file_paths:
@@ -999,14 +1131,18 @@ class SemanticIndexer:
                     if existing and existing["structural_hash"] == structural_hash:
                         continue
 
-                    # Build symbol listing for LLM
+                    # Build symbol listing for LLM; track top-level exports for embedding
                     sym_lines = [f"File: {rel_path}", "Symbols:"]
+                    top_syms: list[str] = []
                     for r in rows:
                         indent = "  " if r["container_name"] else ""
                         sym_line = f"{indent}- [{r['kind_label']}] {r['name']}"
                         if r["summary"]:
                             sym_line += f": {r['summary']}"
                         sym_lines.append(sym_line)
+                        if not r["container_name"] and re.search(r'[a-zA-Z_$]', r["name"] or ""):
+                            top_syms.append(r["name"])
+                    file_top_syms[norm] = top_syms
                     user_msg = "\n".join(sym_lines)
                 messages_list.append([
                     SystemMessage(content=_FILE_SYSTEM_PROMPT),
@@ -1041,7 +1177,9 @@ class SemanticIndexer:
                         (norm, structural_hash, summary, now),
                     )
                     rel = _safe_relpath(norm, self._root_dir)
-                    file_vec_texts.append(f"[File] {rel} — {summary}")
+                    file_vec_texts.append(
+                        _build_file_embed_text(rel, summary, file_top_syms.get(norm, []))
+                    )
                     file_vec_metadatas.append({"file_path": norm, "rel_path": rel, "summary": summary})
                     file_vec_ids.append("file-" + hashlib.sha256(norm.encode("utf-8")).hexdigest())
                 except Exception as e:
