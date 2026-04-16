@@ -72,44 +72,44 @@ Core file: `—`
 
 > **Keyword baseline**: a context-unaware LLM agent generates 1-2 search terms from
 > the natural-language query (no codebase knowledge), then calls `query_symbols`.
-> Tokens-saved model: each result an agent must inspect ≈ 150 tokens.
-> Semantic search stops at the correct result; keyword agent scans all returned results.
+> KW column shows: terms tried → number of results returned → whether the expected
+> symbol appeared anywhere in those results.
 
 **Semantic Hit@1:** 27/28 (96.4%)  
 **Semantic Hit@3:** 28/28 (100.0%)  
-**Semantic Hit@5:** 28/28 (100.0%)
-**Est. tokens saved vs keyword:** ≈14,250 total  (≈509 avg per query)
+**Semantic Hit@5:** 28/28 (100.0%)  
+**Keyword found expected (in top-5):** 1/28 (3.6%)
 
-| # | Query | Expected | Semantic #1 | KW terms | KW #1 | Sem✓ | Tokens↓ |
-|---|---|---|---|---|---|:---:|---:|
-| 1 | abstract base class for AI provider implemen | `BaseAIProvider` | `BaseAIProvider` | `implementations+abstract` | `—` | ✓ | +600 |
-| 2 | AI provider interface contract with chat and | `AIProvider` | `AIProvider` | `interface+provider` | `—` | ✓ | +600 |
-| 3 | chat request sent to an LLM model | `ChatRequest` | `ChatRequest` | `request+model` | `handleAgentRequest` | ✓ | +600 |
-| 4 | streaming response chunk from LLM | `StreamChunk` | `StreamChunk` | `streaming+response` | `chunkTextForStreaming` | ✓ | +0 |
-| 5 | centralized registry for registering and dis | `ToolRegistry` | `ToolRegistry` | `centralized+registering` | `—` | ✓ | +600 |
-| 6 | waifu personality traits on a numerical scal | `WaifuPersonalityTraits` | `WaifuPersonalityTraits` | `personality+numerical` | `formatPersonalityTraits` | ✓ | +150 |
-| 7 | build the complete system prompt for a waifu | `buildSystemPrompt` | `buildSystemPrompt` | `interaction+complete` | `—` | ✓ | +600 |
-| 8 | relationship and context used to construct w | `SystemPromptContext` | `SystemPromptContext` | `relationship+construct` | `setRelationship` | ✓ | +600 |
-| 9 | platform-native adapter for storing encrypte | `KeystoreAdapter` | `KeystoreAdapter` | `encrypted+platform` | `—` | ✓ | +600 |
-| 10 | convert messages to OpenAI-compatible messag | `convertToOpenAIMessages` | `convertToOpenAIMessages` | `compatible+messages` | `fetchOpenAICompatibleModels` | ✓ | +150 |
-| 11 | options passed when creating a new AI provid | `CreateProviderOptions` | `CreateProviderOptions` | `creating+provider` | `—` | ✓ | +600 |
-| 12 | WebSocket message envelope for phone to desk | `WSMessage` | `WSMessage` | `communication+websocket` | `formatCommunicationStyle` | ✓ | +150 |
-| 13 | SQLite-backed persistent chat conversation s | `DesktopSQLiteChatStore` | `DesktopSQLiteChatStore` | `conversation+persistent` | `getMobileConversationSummary` | ✓ | +600 |
-| 14 | context provided to a tool when it is execut | `ToolExecutionContext` | `ToolExecutionContext` | `provided+executed` | `—` | ✓ | +600 |
-| 15 | orchestrate multi-turn conversation flow wit | `AIChatRuntime` | `ToolExecutionContext` | `conversation+orchestrate` | `getMobileConversationSummary` | ✗ | +450 |
-| 16 | check whether a given API credential is vali | `validateApiKey` | `validateApiKey` | `credential+whether` | `—` | ✓ | +600 |
-| 17 | sanitize markup by removing tags and decodin | `stripHtml` | `stripHtml` | `sanitize+removing` | `—` | ✓ | +600 |
-| 18 | QR code scanning screen for pairing with a d | `ScanScreen` | `ScanScreen` | `scanning+pairing` | `—` | ✓ | +600 |
-| 19 | collect and expose runtime performance count | `RuntimeMetrics` | `RuntimeMetrics` | `performance+histograms` | `—` | ✓ | +600 |
-| 20 | configuration for the rainbow color cycling  | `RainbowSettings` | `RainbowSettings` | `configuration+rainbow` | `—` | ✓ | +600 |
-| 21 | permission flags controlling agent filesyste | `ToolPermissions` | `ToolPermissions` | `controlling+permission` | `—` | ✓ | +600 |
-| 22 | track prompt and completion token consumptio | `TokenUsage` | `TokenUsage` | `consumption+completion` | `—` | ✓ | +600 |
-| 23 | define the blueprint for functions that an A | `ToolDefinition` | `ToolDefinition` | `blueprint+functions` | `—` | ✓ | +600 |
-| 24 | delay component mount until after the browse | `useDeferredMount` | `useDeferredMount` | `component+finishes` | `—` | ✓ | +600 |
-| 25 | manage backup copies and restoration of appl | `BackupManager` | `BackupManager` | `restoration+application` | `—` | ✓ | +600 |
-| 26 | inter-process communication composable for E | `useIpc` | `useIpc` | `communication+composable` | `formatCommunicationStyle` | ✓ | +150 |
-| 27 | look up localized text strings by translatio | `t` | `t` | `translation+localized` | `—` | ✓ | +600 |
-| 28 | adapt shell commands for cross-platform comp | `wrapCommand` | `wrapCommand` | `compatibility+commands` | `—` | ✓ | +600 |
+| # | Query | Expected | Semantic top-1 | KW terms tried | KW results | KW found? | @1 | @3 | @5 |
+|---|---|---|---|---|:---:|:---:|:---:|:---:|:---:|
+| 1 | abstract base class for AI provider implemen | `BaseAIProvider` | `BaseAIProvider` | `implementations+abstract` | 0 (no results) | ✗ | ✓ | ✓ | ✓ |
+| 2 | AI provider interface contract with chat and | `AIProvider` | `AIProvider` | `interface+provider` | 0 (no results) | ✗ | ✓ | ✓ | ✓ |
+| 3 | chat request sent to an LLM model | `ChatRequest` | `ChatRequest` | `request+model` | 5 (`handleAgentRequest, resolveRequest`) | ✗ | ✓ | ✓ | ✓ |
+| 4 | streaming response chunk from LLM | `StreamChunk` | `StreamChunk` | `streaming+response` | 1 (`chunkTextForStreaming`) | ✗ | ✓ | ✓ | ✓ |
+| 5 | centralized registry for registering and dis | `ToolRegistry` | `ToolRegistry` | `centralized+registering` | 0 (no results) | ✗ | ✓ | ✓ | ✓ |
+| 6 | waifu personality traits on a numerical scal | `WaifuPersonalityTraits` | `WaifuPersonalityTraits` | `personality+numerical` | 2 (`formatPersonalityTraits, WaifuPersonalityTraits`) | ✓ | ✓ | ✓ | ✓ |
+| 7 | build the complete system prompt for a waifu | `buildSystemPrompt` | `buildSystemPrompt` | `interaction+complete` | 0 (no results) | ✗ | ✓ | ✓ | ✓ |
+| 8 | relationship and context used to construct w | `SystemPromptContext` | `SystemPromptContext` | `relationship+construct` | 5 (`setRelationship, getRelationship`) | ✗ | ✓ | ✓ | ✓ |
+| 9 | platform-native adapter for storing encrypte | `KeystoreAdapter` | `KeystoreAdapter` | `encrypted+platform` | 0 (no results) | ✗ | ✓ | ✓ | ✓ |
+| 10 | convert messages to OpenAI-compatible messag | `convertToOpenAIMessages` | `convertToOpenAIMessages` | `compatible+messages` | 2 (`fetchOpenAICompatibleModels, OpenAICompatibleProvider`) | ✗ | ✓ | ✓ | ✓ |
+| 11 | options passed when creating a new AI provid | `CreateProviderOptions` | `CreateProviderOptions` | `creating+provider` | 0 (no results) | ✗ | ✓ | ✓ | ✓ |
+| 12 | WebSocket message envelope for phone to desk | `WSMessage` | `WSMessage` | `communication+websocket` | 2 (`formatCommunicationStyle, WaifuCommunicationStyle`) | ✗ | ✓ | ✓ | ✓ |
+| 13 | SQLite-backed persistent chat conversation s | `DesktopSQLiteChatStore` | `DesktopSQLiteChatStore` | `conversation+persistent` | 5 (`getMobileConversationSummary, getMobileConversationTitle`) | ✗ | ✓ | ✓ | ✓ |
+| 14 | context provided to a tool when it is execut | `ToolExecutionContext` | `ToolExecutionContext` | `provided+executed` | 0 (no results) | ✗ | ✓ | ✓ | ✓ |
+| 15 | orchestrate multi-turn conversation flow wit | `AIChatRuntime` | `ToolExecutionContext` | `conversation+orchestrate` | 5 (`getMobileConversationSummary, getMobileConversationTitle`) | ✗ | ✗ | ✓ | ✓ |
+| 16 | check whether a given API credential is vali | `validateApiKey` | `validateApiKey` | `credential+whether` | 0 (no results) | ✗ | ✓ | ✓ | ✓ |
+| 17 | sanitize markup by removing tags and decodin | `stripHtml` | `stripHtml` | `sanitize+removing` | 0 (no results) | ✗ | ✓ | ✓ | ✓ |
+| 18 | QR code scanning screen for pairing with a d | `ScanScreen` | `ScanScreen` | `scanning+pairing` | 0 (no results) | ✗ | ✓ | ✓ | ✓ |
+| 19 | collect and expose runtime performance count | `RuntimeMetrics` | `RuntimeMetrics` | `performance+histograms` | 0 (no results) | ✗ | ✓ | ✓ | ✓ |
+| 20 | configuration for the rainbow color cycling  | `RainbowSettings` | `RainbowSettings` | `configuration+rainbow` | 0 (no results) | ✗ | ✓ | ✓ | ✓ |
+| 21 | permission flags controlling agent filesyste | `ToolPermissions` | `ToolPermissions` | `controlling+permission` | 0 (no results) | ✗ | ✓ | ✓ | ✓ |
+| 22 | track prompt and completion token consumptio | `TokenUsage` | `TokenUsage` | `consumption+completion` | 0 (no results) | ✗ | ✓ | ✓ | ✓ |
+| 23 | define the blueprint for functions that an A | `ToolDefinition` | `ToolDefinition` | `blueprint+functions` | 0 (no results) | ✗ | ✓ | ✓ | ✓ |
+| 24 | delay component mount until after the browse | `useDeferredMount` | `useDeferredMount` | `component+finishes` | 0 (no results) | ✗ | ✓ | ✓ | ✓ |
+| 25 | manage backup copies and restoration of appl | `BackupManager` | `BackupManager` | `restoration+application` | 0 (no results) | ✗ | ✓ | ✓ | ✓ |
+| 26 | inter-process communication composable for E | `useIpc` | `useIpc` | `communication+composable` | 2 (`formatCommunicationStyle, WaifuCommunicationStyle`) | ✗ | ✓ | ✓ | ✓ |
+| 27 | look up localized text strings by translatio | `t` | `t` | `translation+localized` | 0 (no results) | ✗ | ✓ | ✓ | ✓ |
+| 28 | adapt shell commands for cross-platform comp | `wrapCommand` | `wrapCommand` | `compatibility+commands` | 0 (no results) | ✗ | ✓ | ✓ | ✓ |
 
 ### 6.2 File Search (`search_files`)
 

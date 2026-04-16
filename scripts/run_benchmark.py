@@ -1418,38 +1418,39 @@ def phase7_report(target_repo: str, version: str, output_dir: Path, state: dict)
             hit3 = [q for q in sym_data if q.get("hit3") is True]
             hit5 = [q for q in sym_data if q.get("hit5") is True]
             total_sym = len(sym_data)
-            total_tokens_saved = retrieval.get("estimated_tokens_saved",
-                sum(q.get("tokens_saved", 0) for q in sym_data))
+            kw_hit_any = [q for q in sym_data
+                          if any(h.get("name") == q.get("expected") for h in q.get("keyword_top5", []))]
             w("### 6.1 Symbol Search (`semantic_search` vs keyword baseline)")
             w("")
             w("> **Keyword baseline**: a context-unaware LLM agent generates 1-2 search terms from")
             w("> the natural-language query (no codebase knowledge), then calls `query_symbols`.")
-            w("> Tokens-saved model: each result an agent must inspect ≈ 150 tokens.")
-            w("> Semantic search stops at the correct result; keyword agent scans all returned results.")
+            w("> KW column shows: terms tried → number of results returned → whether the expected")
+            w("> symbol appeared anywhere in those results.")
             w("")
             if any(q.get("hit1") is not None for q in sym_data):
                 w(f"**Semantic Hit@1:** {len(hit1)}/{total_sym} ({100*len(hit1)/total_sym:.1f}%)  ")
                 w(f"**Semantic Hit@3:** {len(hit3)}/{total_sym} ({100*len(hit3)/total_sym:.1f}%)  ")
-                w(f"**Semantic Hit@5:** {len(hit5)}/{total_sym} ({100*len(hit5)/total_sym:.1f}%)")
-                avg_saved = total_tokens_saved / total_sym if total_sym else 0
-                w(f"**Est. tokens saved vs keyword:** ≈{total_tokens_saved:,} total  "
-                  f"(≈{avg_saved:.0f} avg per query)")
+                w(f"**Semantic Hit@5:** {len(hit5)}/{total_sym} ({100*len(hit5)/total_sym:.1f}%)  ")
+                w(f"**Keyword found expected (in top-5):** {len(kw_hit_any)}/{total_sym} ({100*len(kw_hit_any)/total_sym:.1f}%)")
             else:
                 w(f"Executed {total_sym} symbol queries. Score manually in `benchmark_state.json`, then re-run `--phases 7`.")
             w("")
-            w("| # | Query | Expected | Semantic #1 | KW terms | KW #1 | Sem✓ | Tokens↓ |")
-            w("|---|---|---|---|---|---|:---:|---:|")
+            w("| # | Query | Expected | Semantic top-1 | KW terms tried | KW results | KW found? | @1 | @3 | @5 |")
+            w("|---|---|---|---|---|:---:|:---:|:---:|:---:|:---:|")
             for i, q in enumerate(sym_data, 1):
                 sem5 = q.get("semantic_top5", q.get("top5", []))
                 sem_top1 = sem5[0].get("name", "?") if sem5 and isinstance(sem5[0], dict) else "?"
                 kw5 = q.get("keyword_top5", [])
-                kw_top1 = kw5[0].get("name", "?") if kw5 else "—"
                 exp = q.get("expected", "")
-                kw_terms = "+".join(q.get("kw_keywords") or ([q.get("keyword")] if q.get("keyword") else []))
+                kw_terms = "`" + "+".join(q.get("kw_keywords") or ([q.get("keyword")] if q.get("keyword") else ["?"])) + "`"
+                kw_count = len(kw5)
+                kw_names_str = ", ".join(h["name"] for h in kw5[:2]) if kw5 else "—"
+                kw_found = "✓" if any(h.get("name") == exp for h in kw5) else ("—" if not exp else "✗")
                 h1 = "?" if q.get("hit1") is None else ("✓" if q["hit1"] else "✗")
-                ts = q.get("tokens_saved")
-                ts_str = f"{ts:+d}" if ts is not None else "?"
-                w(f"| {i} | {q.get('query', '')[:44]} | `{exp}` | `{sem_top1}` | `{kw_terms}` | `{kw_top1}` | {h1} | {ts_str} |")
+                h3 = "?" if q.get("hit3") is None else ("✓" if q["hit3"] else "✗")
+                h5 = "?" if q.get("hit5") is None else ("✓" if q["hit5"] else "✗")
+                kw_col = f"{kw_count} (`{kw_names_str}`)" if kw5 else "0 (no results)"
+                w(f"| {i} | {q.get('query', '')[:44]} | `{exp}` | `{sem_top1}` | {kw_terms} | {kw_col} | {kw_found} | {h1} | {h3} | {h5} |")
             w("")
 
         # ── File queries ──────────────────────────────────────────────────

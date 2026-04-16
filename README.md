@@ -55,7 +55,7 @@ Benchmark results below are from **codebase-insights v0.2.4** on a real Electron
 | **Hit@1** | **96.4%** (27/28) | **100%** (5/5) |
 | **Hit@3** | **100%** (28/28) | **100%** (5/5) |
 | **Hit@5** | **100%** (28/28) | **100%** (5/5) |
-| **Est. tokens saved vs keyword** | **~14,250** total (~509/query) | — |
+| **Keyword baseline Hit@1** | 1/28 (3.6%) | — |
 
 ### Progress since v0.1.1
 
@@ -69,16 +69,25 @@ Benchmark results below are from **codebase-insights v0.2.4** on a real Electron
 
 ### Semantic search vs keyword baseline
 
-The benchmark simulates a **context-unaware AI agent** that generates keyword search terms from the same NL queries, then calls \query_symbols\. On 28 queries, keyword search found zero results for 18 of them and returned wrong results on the rest.
+The benchmark uses a **context-unaware LLM agent** as the keyword baseline: given only the natural-language query (no codebase knowledge), it generates 1-2 search terms and calls \query_symbols\. Results:
 
-| Query | Expected | Semantic | KW agent tried | Keyword |
-|---|---|:---:|---|:---:|
-| *“AI provider interface contract with chat and stream methods”* | \AIProvider\ | ✓ | \interface+provider\ | ✗ |
-| *“look up localized text strings by translation key”* | \	\ | ✓ | \	ranslation+localized\ | ✗ |
-| *“platform-native adapter for storing encrypted API keys”* | \KeystoreAdapter\ | ✓ | \ncrypted+platform\ | ✗ |
-| *“SQLite-backed persistent chat conversation storage”* | \DesktopSQLiteChatStore\ | ✓ | \conversation+persistent\ | ✗ |
+| Metric | Semantic search | Keyword baseline |
+|---|---|---|
+| Hit@1 | **27/28 (96.4%)** | 1/28 (3.6%) |
+| Hit@3 | **28/28 (100%)** | 1/28 (3.6%) |
+| Found expected symbol in results | **27/28** | 1/28 |
+| Returned zero results | 0 queries | **18/28 queries** |
 
-**Estimated tokens saved: ~14,250** across 28 queries (~509 per query on average) — because semantic search returns the right answer at ⌛ 1 instead of forcing the agent to scan through a noisy result list.
+Sample failures from the keyword baseline:
+
+| Query | KW agent searched | KW top result | Semantic |
+|---|---|---|---|
+| *“AI provider interface contract”* | \interface+provider\ | — (no results) | \AIProvider\ ✓ |
+| *“SQLite-backed persistent chat storage”* | \conversation+persistent\ | \getMobileConversationSummary\ | \DesktopSQLiteChatStore\ ✓ |
+| *“look up localized text strings by translation key”* | \	ranslation+localized\ | — (no results) | \	\ ✓ |
+| *“sanitize markup by removing tags”* | \sanitize+removing\ | — (no results) | \stripHtml\ ✓ |
+
+On concept-level natural-language queries, keyword search fundamentally cannot generate the right search term because it has no knowledge of how the codebase is named. Semantic search finds the right symbol regardless.
 
 ### Build performance (v0.1.1)
 
