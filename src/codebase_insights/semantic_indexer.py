@@ -840,7 +840,8 @@ class SemanticIndexer:
 
             # --- Hybrid scoring (higher = better) ---
 
-            # Vector similarity: convert L2 distance to 0-1 (higher = closer)
+            # Vector similarity: convert cosine distance → (0, 1] (higher = closer).
+            # Chroma uses cosine distance by default (range [0, 2]); 1/(1+d) gives [1/3, 1].
             vector_sim = 1.0 / (1.0 + float(distance))
 
             # Keyword relevance from name / container matching
@@ -927,7 +928,7 @@ class SemanticIndexer:
         final.sort(key=lambda x: x["_adjusted"], reverse=True)
 
         # Promote the adjusted hybrid similarity as the public `score` (higher = better),
-        # replacing the raw L2 distance that was set during initial scoring.
+        # replacing the raw cosine distance that was set during initial scoring.
         for item in final:
             item["score"] = round(item["_adjusted"], 4)
             item.pop("_hybrid", None)
@@ -973,7 +974,7 @@ class SemanticIndexer:
             rel_path = meta.get("rel_path", os.path.basename(file_path))
             summary = meta.get("summary", "")
 
-            vector_sim = 1.0 / (1.0 + float(distance))
+            vector_sim = 1.0 / (1.0 + float(distance))  # cosine distance → (0, 1]
 
             # Keyword score: match query tokens against filename stem and parent dir
             basename = os.path.basename(file_path)
