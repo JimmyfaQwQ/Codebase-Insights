@@ -36,6 +36,7 @@ The result is a reusable code-understanding layer for intelligent coding assista
 
 - **Workspace-wide symbol indexing**
 - **Natural-language semantic code search**
+- **Natural-language file search** via AI-generated file summaries
 - **Definition / references / implementation navigation via LSP**
 - **Incremental re-indexing** driven by file watching and hashes
 - **Persistent codebase understanding across sessions**
@@ -46,6 +47,8 @@ The result is a reusable code-understanding layer for intelligent coding assista
 ## Benchmark Highlights
 
 Benchmark results below are from **codebase-insights v0.1.1** on a real Electron + Vue + React Native monorepo (`G:\SyntaxSenpai`) with **118 files**, **5,587 symbols**, and **32,570 cross-references**.
+
+These numbers come from an explicit full rebuild benchmark run. For normal evaluation, the recommended workflow is to **reuse the existing index and vector store** and focus on retrieval quality and LSP navigation. Only run rebuild benchmarks when rebuild behavior is explicitly under test.
 
 | Metric | Value |
 |---|---|
@@ -75,12 +78,13 @@ Benchmark results below are from **codebase-insights v0.1.1** on a real Electron
 
 - **Semantic search outperforms keyword-only symbol matching** on concept-level queries
 - A single natural-language query for streaming surfaced provider `stream()` implementations across multiple backends
+- **File-level semantic search** can retrieve the most relevant module for architectural queries such as configuration loading, bootstrap, routing, or logging
 - LSP navigation resolved:
   - **23 references** to `BaseAIProvider`
   - **24 implementations** / subclasses
 - **Top-5 retrieval hit rate reached 100%** on the benchmark query set
 
-> See the full benchmark report in `docs/benchmark.md` for methodology, per-query results, incremental update scenarios, and failure analysis.
+> See [docs/benchmark-v0.1.1.md](e:\Codebase-Insights\docs\benchmark-v0.1.1.md) for methodology, per-query results, incremental update scenarios, and failure analysis.
 
 ---
 
@@ -88,7 +92,8 @@ Benchmark results below are from **codebase-insights v0.1.1** on a real Electron
 
 - **Multi-language support** — Python, JavaScript/TypeScript, C++, Rust via standard LSP servers
 - **Symbol indexing** — full workspace scan with file-watch-driven incremental re-indexing
-- **Semantic search** — AI-generated summaries + embeddings for natural-language retrieval
+- **Semantic search** — AI-generated symbol summaries + embeddings for natural-language retrieval
+- **File search** — AI-generated file summaries + embeddings for module-level retrieval
 - **Hybrid ranking** — blends lexical matching with vector similarity and reference-aware ranking
 - **Flexible model backends** — Ollama (local) or OpenAI-compatible APIs
 - **MCP server** — exposes all capabilities over HTTP for any MCP-compatible client
@@ -132,7 +137,7 @@ These are created at the target project root and automatically added to `.gitign
    Extracts source context for qualifying symbols, generates short LLM summaries, and stores embeddings in ChromaDB.
 
 4. **File and project summarization**  
-   Generates file-level summaries and maintains a project summary for higher-level semantic retrieval and context.
+   Generates file-level summaries, embeds them for file search, and maintains a project summary for higher-level semantic retrieval and context.
 
 5. **Incremental updates**  
    Uses file hashes and symbol-content hashes to skip unchanged work and only reprocess modified or new symbols.
@@ -141,6 +146,9 @@ These are created at the target project root and automatically added to `.gitign
    Exposes symbol and semantic capabilities over MCP:
    - `query_symbols(...)` reads from SQLite
    - `semantic_search(...)` performs hybrid lexical + vector ranking
+   - `search_files(...)` searches embedded file summaries by architectural intent
+   - `get_file_summary(...)` returns the stored summary for one file
+   - `get_project_summary(...)` returns the codebase-level structural overview
    - `lsp_*` tools expose structural navigation directly from language servers
 
 ---
@@ -164,6 +172,8 @@ A concrete benchmark example:
 - Query: **“LLM streaming response handling”**
 - Semantic search returns provider `stream()` implementations directly
 - Keyword symbol search mostly returns names that merely contain `"stream"` such as helpers or chunking utilities
+
+At the file level, a query like **“where is configuration loaded and applied?”** can return the module responsible for config bootstrap even when the relevant symbol names do not literally contain `config`.
 
 That difference matters a lot for coding agents.
 
@@ -259,6 +269,8 @@ codebase-insights <project_root> [options]
 | `--rebuild-summaries` | Regenerate only file/project summaries (keeps symbol summaries) |
 | `--rebuild-vectors` | Re-embed existing summaries with the current embedding model (no LLM calls) |
 
+These rebuild flags are intended for explicit maintenance or benchmarking. In normal usage, let Codebase Insights reuse the existing index and apply incremental updates automatically.
+
 ---
 
 ## MCP tools
@@ -276,7 +288,10 @@ Once running, the following tools are available to connected MCP clients:
 | `lsp_references(file_uri, line, character)` | Find all references to a symbol |
 | `lsp_document_symbols(file_uri)` | List all symbols in a file |
 | `query_symbols(path, kinds, name_query, limit)` | Query the SQLite index by path, kind, or name |
-| `semantic_search(query, limit, kinds)` | Natural-language semantic search |
+| `semantic_search(query, limit, kinds)` | Natural-language search over symbol summaries |
+| `search_files(query, limit)` | Natural-language search over file summaries |
+| `get_file_summary(file_path)` | Return the stored AI summary for one file |
+| `get_project_summary()` | Return the AI-generated structural overview of the codebase |
 
 > `file_uri` should use normal file URIs such as `file:///G:/repo/path/to/file.ts`.
 
@@ -328,6 +343,8 @@ Codebase Insights is useful for questions like:
 - **“Find all implementations of this provider interface.”**
 - **“What handles WebSocket messages in this repo?”**
 - **“Where is configuration loaded and applied?”**
+- **“Which file is responsible for application bootstrap?”**
+- **“Which module owns logging and error handling?”**
 - **“Show me every reference to this base class.”**
 - **“Find the real code responsible for streaming responses.”**
 - **“Search the repository by behavior, not just by exact symbol names.”**

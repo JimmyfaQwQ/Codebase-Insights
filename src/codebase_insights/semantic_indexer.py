@@ -40,6 +40,7 @@ from .semantic_config import (
 
 _CHROMA_DIR_NAME = ".codebase-semantic"
 _CHROMA_COLLECTION = "symbol_summaries"
+_FILE_CHROMA_COLLECTION = "file_summaries"
 
 _MAX_CONTEXT_LINES = 50
 
@@ -72,6 +73,19 @@ def _tokenize(text: str) -> list[str]:
     expanded = _CAMEL_RE.sub(' ', text)
     tokens = _TOKEN_SPLIT_RE.split(expanded.lower())
     return [t for t in tokens if t and len(t) > 1]
+
+
+def _safe_relpath(path: str, start: str) -> str:
+    """Return a relative path when possible, else fall back to the original path.
+
+    On Windows, os.path.relpath raises ValueError when path and start are on
+    different drives. File-summary data can persist across benchmark targets, so
+    we need a stable fallback instead of failing the entire semantic pass.
+    """
+    try:
+        return os.path.relpath(path, start)
+    except ValueError:
+        return path
 
 
 def _make_embedding_text(name: str, kind: str, container: str, summary: str) -> str:
@@ -222,6 +236,11 @@ class SemanticIndexer:
 
         self._vectorstore = Chroma(
             collection_name=_CHROMA_COLLECTION,
+            embedding_function=self._embeddings,
+            persist_directory=self._chroma_dir,
+        )
+        self._file_vectorstore = Chroma(
+            collection_name=_FILE_CHROMA_COLLECTION,
             embedding_function=self._embeddings,
             persist_directory=self._chroma_dir,
         )
@@ -426,10 +445,16 @@ class SemanticIndexer:
         """Wipe all summaries and the ChromaDB store so everything is re-generated."""
         with self._lock:
             try:
-                # Drop and recreate the Chroma collection
+                # Drop and recreate the Chroma collections
                 self._vectorstore.delete_collection()
                 self._vectorstore = Chroma(
                     collection_name=_CHROMA_COLLECTION,
+                    embedding_function=self._embeddings,
+                    persist_directory=self._chroma_dir,
+                )
+                self._file_vectorstore.delete_collection()
+                self._file_vectorstore = Chroma(
+                    collection_name=_FILE_CHROMA_COLLECTION,
                     embedding_function=self._embeddings,
                     persist_directory=self._chroma_dir,
                 )
@@ -533,6 +558,71 @@ class SemanticIndexer:
                         ids=chroma_ids[i:i + batch_size],
                     )
                     print(f"[Semantic] Re-embedded {min(i + batch_size, len(texts))}/{len(rows)}...")
+
+                # Rebuild file embeddings
+                self._file_vectorstore.delete_collection()
+                self._file_vectorstore = Chroma(
+                    collection_name=_FILE_CHROMA_COLLECTION,
+                    embedding_function=self._embeddings,
+                    persist_directory=self._chroma_dir,
+                )
+                con2 = sqlite3.connect(self._db_path, check_same_thread=False)
+                con2.row_factory = sqlite3.Row
+                file_rows = con2.execute(
+                    "SELECT file_path, summary FROM file_summaries ORDER BY file_path"
+                ).fetchall()
+                con2.close()
+                if file_rows:
+                    # Normalise paths: resolve any relative paths stored in SQLite
+                    # against the project root, then deduplicate by canonical path.
+                    seen: dict[str, str] = {}
+                    for r in file_rows:
+                        fp = r["file_path"]
+                        if not os.path.isabs(fp):
+                            fp = os.path.normpath(os.path.join(self._root_dir, fp))
+                        if fp not in seen:
+                            seen[fp] = r["summary"]
+                    deduped_rows = list(seen.items())  # [(abs_path, summary), ...]
+
+                    file_texts = [
+                        f"[File] {_safe_relpath(fp, self._root_dir)} — {summary}"
+                        for fp, summary in deduped_rows
+                    ]
+                    file_metadatas = [
+                        {
+                            "file_path": fp,
+                            "rel_path": _safe_relpath(fp, self._root_dir),
+                            "summary": summary,
+                        }
+                        for fp, summary in deduped_rows
+                    ]
+                    file_ids = [
+                        "file-" + hashlib.sha256(fp.encode("utf-8")).hexdigest()
+                        for fp, _ in deduped_rows
+                    ]
+                    self._file_vectorstore.add_texts(
+                        texts=file_texts, metadatas=file_metadatas, ids=file_ids
+                    )
+                    print(f"[Semantic] Re-embedded {len(deduped_rows)} file summaries.")
+
+                    # Remove orphaned relative-path entries from SQLite so that
+                    # subsequent structural-hash checks work against absolute paths.
+                    con3 = sqlite3.connect(self._db_path, check_same_thread=False)
+                    try:
+                        relative_paths = [
+                            r["file_path"] for r in file_rows
+                            if not os.path.isabs(r["file_path"])
+                        ]
+                        if relative_paths:
+                            con3.executemany(
+                                "DELETE FROM file_summaries WHERE file_path=?",
+                                [(p,) for p in relative_paths],
+                            )
+                            con3.commit()
+                            print(f"[Semantic] Removed {len(relative_paths)} orphaned relative-path "
+                                  f"entries from file_summaries.")
+                    finally:
+                        con3.close()
 
                 print("[Semantic] Vector rebuild complete.")
             except Exception as e:
@@ -710,6 +800,43 @@ class SemanticIndexer:
 
         return {"result": final, "count": len(final)}
 
+    def search_files(self, query: str, limit: int = 10) -> dict:
+        """Search files by natural language query using AI-generated file summaries.
+
+        Returns files ranked by semantic similarity to the query, each with
+        the file path and a summary of the file's purpose.
+        """
+        limit = min(max(1, limit), 100)
+        _t0 = time.perf_counter()
+        try:
+            raw_results = self._file_vectorstore.similarity_search_with_score(query, k=limit)
+        except Exception as e:
+            return {"error": f"File semantic search failed: {e}"}
+
+        latency_ms = round((time.perf_counter() - _t0) * 1000, 1)
+
+        if not raw_results:
+            print(
+                f"[BENCHMARK:FILE_SEARCH] latency_ms={latency_ms} results=0",
+                flush=True,
+            )
+            return {"result": [], "count": 0}
+
+        out = []
+        for doc, distance in raw_results:
+            meta = doc.metadata
+            out.append({
+                "file":    meta.get("file_path", ""),
+                "rel_path": meta.get("rel_path", os.path.basename(meta.get("file_path", ""))),
+                "summary": meta.get("summary", ""),
+                "score":   round(float(distance), 4),
+            })
+        print(
+            f"[BENCHMARK:FILE_SEARCH] latency_ms={latency_ms} results={len(out)}",
+            flush=True,
+        )
+        return {"result": out, "count": len(out)}
+
     # ------------------------------------------------------------------
     # Internal: indexing pipeline
     # ------------------------------------------------------------------
@@ -803,16 +930,38 @@ class SemanticIndexer:
         try:
             for file_path in file_paths:
                 norm = canonical_path(file_path)
+                # Compute the canonical absolute path for storage in file_summaries.
+                # The symbols table may have stored the path in relative form, so we
+                # keep `query_path` (as-is) for the symbols SELECT and only use
+                # `abs_norm` as the storage key.
+                query_path = norm
+                if not os.path.isabs(norm):
+                    abs_norm = os.path.normpath(os.path.join(self._root_dir, norm))
+                else:
+                    abs_norm = norm
                 rows = con.execute(
                     """SELECT s.name, s.kind_label, s.container_name, s.def_line, ss.summary
                        FROM symbols s
                        LEFT JOIN symbol_summaries ss ON ss.symbol_id = s.id
                        WHERE s.file_path = ?
                        ORDER BY s.def_line""",
-                    (norm,),
+                    (query_path,),
                 ).fetchall()
+                # If no symbols found with the original path, retry with absolute form
+                # (handles files whose symbols were indexed with the absolute path).
+                if not rows and query_path != abs_norm:
+                    rows = con.execute(
+                        """SELECT s.name, s.kind_label, s.container_name, s.def_line, ss.summary
+                           FROM symbols s
+                           LEFT JOIN symbol_summaries ss ON ss.symbol_id = s.id
+                           WHERE s.file_path = ?
+                           ORDER BY s.def_line""",
+                        (abs_norm,),
+                    ).fetchall()
+                # Use the canonical absolute path for all storage from here on.
+                norm = abs_norm
 
-                rel_path = os.path.relpath(norm, self._root_dir)
+                rel_path = _safe_relpath(norm, self._root_dir)
 
                 if not rows:
                     # No symbols — fall back to first 50 lines of source
@@ -879,6 +1028,9 @@ class SemanticIndexer:
                 return
 
             now = time.time()
+            file_vec_texts: list[str] = []
+            file_vec_metadatas: list[dict] = []
+            file_vec_ids: list[str] = []
             for (norm, structural_hash), response in zip(pending_files, responses):
                 try:
                     summary = response.content.strip()
@@ -888,9 +1040,22 @@ class SemanticIndexer:
                            VALUES (?, ?, ?, ?)""",
                         (norm, structural_hash, summary, now),
                     )
+                    rel = _safe_relpath(norm, self._root_dir)
+                    file_vec_texts.append(f"[File] {rel} — {summary}")
+                    file_vec_metadatas.append({"file_path": norm, "rel_path": rel, "summary": summary})
+                    file_vec_ids.append("file-" + hashlib.sha256(norm.encode("utf-8")).hexdigest())
                 except Exception as e:
                     print(f"[Semantic] Failed to save file summary for {norm}: {e}")
             con.commit()
+            if file_vec_texts:
+                try:
+                    self._file_vectorstore.add_texts(
+                        texts=file_vec_texts,
+                        metadatas=file_vec_metadatas,
+                        ids=file_vec_ids,
+                    )
+                except Exception as e:
+                    print(f"[Semantic] Failed to upsert file embeddings: {e}")
             print(f"[Semantic] File summaries updated.")
             print(
                 f"[BENCHMARK:FILE_SUMMARIES] wall_time={time.perf_counter() - _bm_fs_start:.2f}s "
@@ -959,7 +1124,7 @@ class SemanticIndexer:
             # --- Full regeneration ----------------------------------------
             print("[Semantic] Generating project summary...")
             file_lines = [
-                f"- {os.path.relpath(r['file_path'], self._root_dir)}: {r['summary']}"
+                f"- {_safe_relpath(r['file_path'], self._root_dir)}: {r['summary']}"
                 for r in rows
             ]
             user_msg = "Files in this codebase:\n" + "\n".join(file_lines)
@@ -1065,17 +1230,17 @@ class SemanticIndexer:
         if new:
             parts.append("New files:")
             for fp, summary in new:
-                rel = os.path.relpath(fp, self._root_dir)
+                rel = _safe_relpath(fp, self._root_dir)
                 parts.append(f"  + {rel}: {summary}")
         if changed:
             parts.append("Updated files:")
             for fp, summary in changed:
-                rel = os.path.relpath(fp, self._root_dir)
+                rel = _safe_relpath(fp, self._root_dir)
                 parts.append(f"  ~ {rel}: {summary}")
         if removed:
             parts.append("Removed files:")
             for fp in removed:
-                rel = os.path.relpath(fp, self._root_dir)
+                rel = _safe_relpath(fp, self._root_dir)
                 parts.append(f"  - {rel}")
 
         changes_text = "\n".join(parts)
@@ -1424,5 +1589,11 @@ class SemanticIndexer:
             # is regenerated and no longer references the deleted file.
             con.execute("DELETE FROM file_summaries WHERE file_path=?", (norm,))
             con.commit()
+            # Remove from file vector store
+            file_chroma_id = "file-" + hashlib.sha256(norm.encode("utf-8")).hexdigest()
+            try:
+                self._file_vectorstore.delete(ids=[file_chroma_id])
+            except Exception:
+                pass
         finally:
             con.close()

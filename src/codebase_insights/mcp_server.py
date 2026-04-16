@@ -45,16 +45,16 @@ def _to_file_uri(file_uri: str) -> str:
       → ``file:///G:/foo/bar.ts``
     - Bare POSIX absolute paths: ``/home/user/foo.py`` → ``file:///home/user/foo.py``
     """
-    import urllib.parse
     s = file_uri.strip()
     if s.lower().startswith("file:"):
         # Already a URI — return as-is (LSP server normalises case internally)
         return s
-    # Bare filesystem path — convert to file URI.
-    # urllib.request.pathname2url handles Windows drive letters correctly.
-    from urllib.request import pathname2url
-    # pathname2url on Windows returns /G:/foo/bar — prepend file://
-    return "file://" + pathname2url(s)
+    # Bare filesystem path — use pathlib which correctly handles Windows drive
+    # letters and produces exactly three slashes (file:///G:/...).
+    # Using "file://" + pathname2url() is wrong on Windows: pathname2url already
+    # prepends "///" so the result would be "file://///G:/..." (5 slashes).
+    from pathlib import Path
+    return Path(s).as_uri()
 
 
 def _get_client(file_uri: str) -> tuple[LSP.LSPClient | None, dict | None]:
@@ -581,6 +581,30 @@ def semantic_search(
         return {"error": "Semantic indexing is not available. "
                          "Ensure an LLM provider (Ollama / OpenAI) is configured."}
     return _semantic_indexer.search(query=query, limit=limit, kinds=kinds)
+
+
+@mcp.tool()
+def search_files(
+    query: str,
+    limit: int = 10,
+) -> dict:
+    """Search source files by natural language description using AI-generated file summaries.
+
+    Use this when you want to find *which files* are relevant to a topic rather than
+    individual symbols.  For example, "file that handles authentication", "module
+    responsible for database migrations", or "code that parses config files".
+
+    Each result includes the file path, its relative path, and a short summary of
+    its primary responsibility.
+
+    Args:
+        query:  Natural language description of the kind of file you are looking for.
+        limit:  Maximum results to return (default 10, max 100).
+    """
+    if _semantic_indexer is None:
+        return {"error": "Semantic indexing is not available. "
+                         "Ensure an LLM provider (Ollama / OpenAI) is configured."}
+    return _semantic_indexer.search_files(query=query, limit=limit)
 
 
 @mcp.tool()

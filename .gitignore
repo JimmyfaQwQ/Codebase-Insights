@@ -10,3 +10,4 @@ wheels/
 .venv
 
 .vscode
+benchmark_results/

@@ -5,13 +5,19 @@ Wraps `codebase-insights` as a subprocess and continuously monitors its
 resource usage, then writes a structured JSON report to
 benchmark_results/full_rebuild.json.
 
+This script is intended for explicit rebuild-related benchmarks only.
+For normal benchmark runs, prefer reusing an existing index and test
+retrieval/LSP quality without `--rebuild-index`, `--rebuild-semantic`, or
+`--rebuild-vectors`.
+
 Usage:
     python scripts/benchmark_monitor.py "G:\\SyntaxSenpai\\" [extra cli flags...]
 
-Extra CLI flags are forwarded verbatim to codebase-insights.  The most
-common invocation for a full benchmark run:
+Extra CLI flags are forwarded verbatim to codebase-insights. Typical
+explicit rebuild invocations are:
 
     python scripts/benchmark_monitor.py "G:\\SyntaxSenpai\\" --rebuild-index --rebuild-semantic
+    python scripts/benchmark_monitor.py "G:\\SyntaxSenpai\\" --rebuild-vectors
 
 Requirements:
     pip install psutil
@@ -146,6 +152,12 @@ def main() -> None:
     t_wall_start = time.perf_counter()
     started_at = datetime.now(timezone.utc).isoformat()
 
+    # PYTHONUNBUFFERED=1 forces the codebase-insights subprocess to flush every
+    # print() immediately even though its stdout is a pipe (not a TTY).
+    # Without this, Python buffers stdout in 8 KiB blocks and log lines only
+    # appear in the log file once the buffer fills or the process exits.
+    _env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -154,6 +166,7 @@ def main() -> None:
         encoding="utf-8",
         errors="replace",
         bufsize=1,
+        env=_env,
     )
     psutil_proc = psutil.Process(proc.pid)
     # Initialise CPU measurement baseline
@@ -204,7 +217,7 @@ def main() -> None:
             indexing_done_t = time.perf_counter()
             print(f"\n[BenchmarkMonitor] Indexing phase complete at "
                   f"{indexing_done_t - t_wall_start:.1f}s wall-clock. "
-                  f"(Process still running as MCP server — stopping resource monitor.)")
+                  f"(Stopping server process tree...)")
             break
 
         if ret is not None:
@@ -214,6 +227,38 @@ def main() -> None:
 
     t_wall_end = time.perf_counter()
     wall_clock_s = t_wall_end - t_wall_start
+
+    # ------------------------------------------------------------------
+    # Kill the server process tree now that indexing is complete.
+    #
+    # benchmark_monitor exits as soon as SIZES is logged, but the server
+    # (uvicorn + spawned workers) keeps running indefinitely.  We must
+    # terminate the full process tree here so the port is released before
+    # run_benchmark.py proceeds to Phase 3.  Leaving orphan processes causes
+    # Phase 3 to detect a "running" server, skip its fresh-server start,
+    # then fail all MCP calls against the dying orphan.
+    # ------------------------------------------------------------------
+    if proc.poll() is None:
+        try:
+            for child in psutil_proc.children(recursive=True):
+                try:
+                    child.terminate()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                # Hard-kill anything still alive
+                for child in psutil_proc.children(recursive=True):
+                    try:
+                        child.kill()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                proc.kill()
+                proc.wait(timeout=5)
+        except (psutil.NoSuchProcess, ProcessLookupError):
+            pass
 
     # Wait for I/O threads to drain any buffered data (give them a moment)
     t_stdout.join(timeout=5)
