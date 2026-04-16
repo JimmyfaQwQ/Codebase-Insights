@@ -52,9 +52,15 @@ _CAMEL_RE = re.compile(r'(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])')
 _TOKEN_SPLIT_RE = re.compile(r'[^a-z0-9]+')
 
 # Hybrid scoring: keyword vs. vector blend (0 = pure vector, 1 = pure keyword)
-# Raised from 0.35 → 0.45: keyword name-matching is a strong signal (benchmark v0.2.0
-# showed query_symbols exact-match dominated; boosting the keyword weight improves Hit@1).
-_KEYWORD_WEIGHT = 0.45
+# Reverted from 0.45 → 0.35 in v0.2.2: raising the weight to 0.45 caused a
+# Hit@1 regression — keyword tie-breakers (e.g. "options" in both AISetupOptions
+# and CreateProviderOptions) swamped the vector similarity signal that correctly
+# disambiguates semantically similar names.
+_KEYWORD_WEIGHT = 0.35
+# Separate (lower) keyword weight for file search: file path tokens are much
+# noisier than symbol names (e.g. "provider" in provider.ts scores identically
+# for any provider-related query).  A lower weight keeps file search semantic.
+_FILE_KEYWORD_WEIGHT = 0.20
 # Diversity: each extra result from the same file is penalised by this factor
 _SAME_FILE_DECAY = 0.85
 # Symbols with the same name appearing multiple times (e.g. the same helper
@@ -62,6 +68,15 @@ _SAME_FILE_DECAY = 0.85
 # Key uses name only (not kind) so e.g. Method+Function variants of the same
 # name are grouped together and decay applies across the group.
 _SAME_NAME_DECAY = 0.30
+# Exact-name-match multipliers: applied post-blend to reward queries that
+# explicitly reference a symbol name.  Only fires when the name is at least 4
+# chars (avoids trivial stop-word matches) and the match is unambiguous.
+#   Verbatim: the full lowercased name appears as a substring of the query
+#   Full-token: every camelCase/snake_case token of the name appears in the query
+# These multipliers intentionally scale the entire hybrid score (including the
+# vector component) so that an explicit name lookup overrides any noise penalty.
+_NAME_VERBATIM_MULTIPLIER = 2.5
+_NAME_FULL_TOKEN_MULTIPLIER = 1.8
 
 
 def _tokenize(text: str) -> list[str]:
@@ -775,8 +790,9 @@ class SemanticIndexer:
         4. Blend vector similarity and keyword score into a hybrid score
         5. Apply noise penalties (generated paths, anonymous names, etc.)
         6. Apply ref-count boost (well-referenced symbols rank higher)
-        7. Apply same-file / same-name diversity decay
-        8. Return top-k by final adjusted score
+        7. Apply exact-name-match multiplier (verbatim ×2.5 / full-token ×1.8)
+        8. Apply same-file / same-name diversity decay
+        9. Return top-k by final adjusted score
         """
         limit = min(max(1, limit), 100)
         fetch_k = limit * self._candidate_multiplier
@@ -801,6 +817,10 @@ class SemanticIndexer:
 
         # Bulk-fetch ref counts for all candidates
         ref_count_map = self._fetch_ref_counts(raw_results)
+
+        # Pre-compute query info once — used for exact-name-match multiplier
+        query_lower = query.lower()
+        query_tokens_set = set(_tokenize(query))
 
         # Score each candidate
         scored: list[dict] = []
@@ -844,6 +864,19 @@ class SemanticIndexer:
                 # Cap: a symbol cannot boost more than 1.35x over baseline
                 boost = min(boost, 1.35)
                 hybrid *= boost
+
+            # Exact-name-match multiplier: reward queries that explicitly
+            # reference this symbol's name.  Applied after penalty + boost so
+            # it overrides noise without being itself amplified by boost.
+            # Only fires for names with ≥4 chars to avoid stop-word collisions.
+            name_lower = name.lower()
+            name_tok_set = set(_tokenize(name))
+            if len(name_lower) >= 4 and name_lower in query_lower:
+                # Full verbatim match — highest confidence
+                hybrid *= _NAME_VERBATIM_MULTIPLIER
+            elif len(name_tok_set) >= 2 and name_tok_set.issubset(query_tokens_set):
+                # All constituent tokens of the name appear in the query
+                hybrid *= _NAME_FULL_TOKEN_MULTIPLIER
 
             scored.append({
                 "name":       name,
@@ -946,7 +979,7 @@ class SemanticIndexer:
             parent = os.path.dirname(rel_path).replace("\\", "/")
             path_score = self._compute_name_relevance(query, stem, parent)
 
-            hybrid = (1.0 - _KEYWORD_WEIGHT) * vector_sim + _KEYWORD_WEIGHT * path_score
+            hybrid = (1.0 - _FILE_KEYWORD_WEIGHT) * vector_sim + _FILE_KEYWORD_WEIGHT * path_score
 
             scored.append({
                 "file":     file_path,
