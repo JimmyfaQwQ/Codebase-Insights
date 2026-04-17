@@ -49,6 +49,8 @@ Always invoke with run_in_terminal using mode=sync and timeout=0:
 
 Do not use mode=async for this script.
 
+After the report is finalized and committed, delete `benchmark_results/`. Treat it as local scratch output only.
+
 ### What the script automates
 
 | Phase | Automated action |
@@ -59,11 +61,12 @@ Do not use mode=async for this script.
 | 3 — Incremental A-D | Run all scenarios, collect timings, revert test edits |
 | 4 — Retrieval | Run symbol semantic_search + keyword baseline and file search_files; auto compute hit@1/3/5 from score-sorted results |
 | 5 — LSP matrix | Run LSP capability and navigation test set |
-| 7 — Report | Generate docs/benchmark-v<VER>.md and benchmark_results/benchmark_state.json |
+| 7 — Report | Generate benchmarks/benchmark-v<VER>.md and benchmark_results/benchmark_state.json |
 
 ### What remains manual
 
 - Phase 6 bug triage write-up: summarize symptoms, root causes, and fixes in report findings.
+- Delete `benchmark_results/` after the benchmark markdown is finalized and committed.
 
 ### Queries file format (Phase 4)
 
@@ -247,7 +250,7 @@ Common bugs to watch for:
 Automated by scripts/run_benchmark.py (phase 7).
 
 Output files:
-- docs/benchmark-vX.Y.Z.md
+- benchmarks/benchmark-vX.Y.Z.md
 - benchmark_results/benchmark_state.json
 
 ### Required sections
@@ -274,9 +277,9 @@ Output files:
 
 After Phase 7 generates the report, complete these steps in order:
 
-1. **Tick every checklist item** in `docs/benchmark-vX.Y.Z.md`. The report contains a `## Completion Checklist` section with `- [ ]` items — replace each `- [ ]` with `- [x]` once verified.
+1. **Tick every checklist item** in `benchmarks/benchmark-vX.Y.Z.md`. The report contains a `## Completion Checklist` section with `- [ ]` items — replace each `- [ ]` with `- [x]` once verified.
 
-2. **Commit the report** (`git add docs/benchmark-vX.Y.Z.md && git commit`).
+2. **Commit the report** (`git add benchmarks/benchmark-vX.Y.Z.md && git commit`).
 
 3. **Delete `benchmark_results/`** after the commit — it holds large log files and binary JSON that must not be committed:
 

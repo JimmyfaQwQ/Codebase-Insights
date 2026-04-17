@@ -6,7 +6,7 @@
 **Task:** Implement a new Google Gemini AI provider in SyntaxSenpai  
 **Target repository:** `G:\SyntaxSenpai` (Electron + React + React Native monorepo)  
 **Framework:** GitHub Copilot SDK (`github-copilot-sdk`)  
-**Script:** `scripts/copilot_sdk_benchmark.py`
+**Script:** `scripts/demo_agent_benchmark.py`
 
 ---
 
@@ -202,7 +202,7 @@ That increase is expected. MCP calls have network and server overhead, and the a
 codebase-insights G:\SyntaxSenpai
 
 # 2. Run both benchmark modes
-python scripts/copilot_sdk_benchmark.py --mode both --model gpt-5-mini
+python scripts/demo_agent_benchmark.py --mode both --model gpt-5-mini
 ```
 
 Results are written to `benchmark_results/copilot_sdk_benchmark_<timestamp>.json`.

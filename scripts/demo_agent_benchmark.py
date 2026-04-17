@@ -1,12 +1,12 @@
 """
-copilot_sdk_benchmark.py — Copilot SDK Token Consumption Benchmark
+demo_agent_benchmark.py — Copilot SDK Token Consumption Benchmark
 
 Compares token usage when the Copilot agent tackles the same programming task
 with and without Codebase Insights MCP server connected.
 
 The key design principle for the enhanced mode prompt: CI tools must be used
 as a SUBSTITUTE for manual file browsing — not a warm-up before it. The prompt
-explicitly teaches the agent a navigate-then-read workflow:
+explicitly teaches the agent a CI-first, summary-gated workflow:
   1. get_project_summary  → orient, no file reads yet
   2. search_files / semantic_search / query_symbols  → pinpoint exact files/symbols
   3. get_file_summary  → scan candidates cheaply; skip full read if summary suffices
@@ -15,18 +15,23 @@ explicitly teaches the agent a navigate-then-read workflow:
 Results (gpt-5-mini, SyntaxSenpai — Gemini provider task):
     Baseline (v2): 212K tokens (10 turns, 10 views)
     Enhanced (v1, vague prompt): 809K tokens (25 turns, +281%)
-    Enhanced (v2, CI-as-navigator): see latest benchmark_results/
+    Enhanced (v2, CI-first workflow): see latest benchmark_results/
 
 Usage:
     # Baseline (no MCP):
-    python scripts/copilot_sdk_benchmark.py --mode baseline
+    python scripts/demo_agent_benchmark.py --mode baseline
 
     # Enhanced (with Codebase Insights MCP):
     # First start the MCP server: codebase-insights G:\\SyntaxSenpai
-    python scripts/copilot_sdk_benchmark.py --mode enhanced
+    python scripts/demo_agent_benchmark.py --mode enhanced
 
     # Both modes in sequence:
-    python scripts/copilot_sdk_benchmark.py --mode both
+    python scripts/demo_agent_benchmark.py --mode both
+
+Cleanup:
+    benchmark_results/ is scratch output. Keep the JSON only if you still need it.
+    After extracting the metrics you care about, delete benchmark_results/ so it
+    does not accumulate local benchmark artifacts.
 
 Requirements:
     - github-copilot-sdk (pip install github-copilot-sdk)
@@ -92,7 +97,7 @@ CODING_TASK_ENHANCED = textwrap.dedent("""\
     The goal is to read as FEW raw source files as possible while still getting
     the information you need. Follow this workflow:
 
-    STEP 1 — Orient yourself (do NOT browse files yet):
+    STEP 1 — Get oriented (do NOT browse files yet):
       - `get_project_summary` → architecture overview, which modules own what
 
     STEP 2 — Find exactly what you need (do NOT glob/grep):
@@ -127,7 +132,7 @@ CODING_TASK_ENHANCED = textwrap.dedent("""\
        - Maps Gemini-specific types to the shared message format
     4. Write the file to disk at the appropriate location.
 
-    Do NOT use glob, do NOT browse directories. Let codebase-insights navigate for you.
+    Do NOT use glob and do NOT browse directories unless the indexed tools prove insufficient.
 """)
 
 
@@ -482,6 +487,9 @@ def main():
             "results": results,
         }, f, indent=2)
     print(f"\n  Results saved to: {out_path}")
+    print("  Cleanup reminder: benchmark_results/ is local scratch output.")
+    print("  Delete it after extracting the metrics you need.")
+    print("  PowerShell: Remove-Item -Recurse -Force benchmark_results")
 
 
 if __name__ == "__main__":
