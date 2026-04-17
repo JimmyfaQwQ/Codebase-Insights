@@ -358,7 +358,8 @@ src/codebase_insights/
 ├── workspace_indexer.py SQLite symbol/reference index + file watching
 ├── semantic_config.py   Config loading and first-run setup wizard
 ├── semantic_indexer.py  LLM summaries, embeddings, ranking, file/project summaries
-└── mcp_server.py        MCP tool surface
+├── mcp_server.py        MCP tool surface
+└── agent-navigator-instructions.md  Prompt template and workflow reference for agent navigation
 
 scripts/
 ├── run_benchmark.py          Benchmark orchestrator (indexing, retrieval, LSP)
@@ -366,8 +367,7 @@ scripts/
 
 docs/
 ├── benchmark-v*.md                Versioned indexing/retrieval benchmark reports
-├── agent-token-benchmark.md       Agent token A/B benchmark report (v1.1.0)
-└── agent-navigator-instructions.md  Prompt template and workflow reference for agents
+└── agent-token-benchmark-v*.md       Agent token A/B benchmark report (v1.1.0)
 ```
 
 ## Files created in the indexed repository
@@ -399,9 +399,9 @@ If the target repository already has a `.gitignore`, Codebase Insights automatic
 
 ### Agent token benchmark
 
-- Report: [docs/agent-token-benchmark.md](docs/agent-token-benchmark.md) (v1.1.0)
+- Report: [docs/agent-token-benchmark-v1.1.0.md](docs/agent-token-benchmark-v1.1.0.md)
 - Script: [scripts/copilot_sdk_benchmark.py](scripts/copilot_sdk_benchmark.py)
-- Navigator instructions: [docs/agent-navigator-instructions.md](docs/agent-navigator-instructions.md)
+- Navigator instructions: [agent-navigator-instructions.md](agent-navigator-instructions.md)
 
 ## License
 
