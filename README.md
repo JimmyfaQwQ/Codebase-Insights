@@ -54,6 +54,35 @@ Instead of asking an agent to invent keywords, dump large result sets, and reaso
 
 This is exactly where the benchmark shows the biggest advantage: concept-heavy queries where the caller knows **what the code does**, but not **what it is called**.
 
+## Agent token savings
+
+The value of a persistent index depends on whether the agent actually uses it as a navigator — not as an orientation exercise before reading every file anyway.
+
+A controlled A/B benchmark (same task, same model, temperature=0) measured the difference on a real implementation task:
+
+> **Task:** implement a new Google Gemini AI provider in SyntaxSenpai, matching the structure of existing providers.  
+> **Model:** gpt-5-mini · **Framework:** GitHub Copilot SDK
+
+| Metric | Baseline (file-system tools only) | + Codebase Insights | Δ |
+|---|---:|---:|---|
+| Agent turns | 17 | 12 | **−29%** |
+| Total tokens | 366,388 | 301,247 | **−18%** |
+| Raw `view` calls | 14 | 5 | **−64%** |
+
+Six CI calls (≈3–4k tokens of summaries) replaced nine `view` calls (≈30–60k tokens of raw source). The compression ratio for navigation context is roughly **10:1**.
+
+The key is **prompt design**: CI tools must be used as a *substitute* for file browsing, not as a warm-up before it. The navigate-then-read workflow is:
+
+1. `get_project_summary` — orient, no file reads yet
+2. `search_files` / `semantic_search` / `query_symbols` — pinpoint the exact files and symbols
+3. `get_file_summary` — scan cheaply; skip `view` if the summary suffices
+4. `view` with line ranges — read only confirmed-relevant sections
+
+The reusable skill (prompt template + workflow reference) is at [`.github/skills/codebase-insights-navigator/SKILL.md`](.github/skills/codebase-insights-navigator/SKILL.md).  
+Full benchmark report: [docs/agent-token-benchmark.md](docs/agent-token-benchmark.md)
+
+---
+
 ## Benchmark snapshot (v1.1.0)
 
 Latest checked-in report: [docs/benchmark-v1.1.0.md](docs/benchmark-v1.1.0.md)
@@ -332,10 +361,16 @@ src/codebase_insights/
 └── mcp_server.py        MCP tool surface
 
 scripts/
-└── run_benchmark.py     Benchmark orchestrator
+├── run_benchmark.py          Benchmark orchestrator (indexing, retrieval, LSP)
+└── copilot_sdk_benchmark.py  Agent token A/B benchmark (baseline vs CI-as-navigator)
+
+.github/skills/
+├── benchmark-eval/           Skill: run the full indexing/retrieval benchmark pipeline
+└── codebase-insights-navigator/  Skill: navigate-then-read prompt + workflow reference
 
 docs/
-└── benchmark-v*.md      Versioned benchmark reports
+├── benchmark-v*.md           Versioned indexing/retrieval benchmark reports
+└── agent-token-benchmark.md  Agent token A/B benchmark report
 ```
 
 ## Files created in the indexed repository
@@ -358,9 +393,18 @@ If the target repository already has a `.gitignore`, Codebase Insights automatic
 
 ## Benchmark material
 
+### Indexing & retrieval benchmark
+
 - Latest report: [docs/benchmark-v1.1.0.md](docs/benchmark-v1.1.0.md)
 - Historical reports: [docs/](docs)
 - Benchmark runner: [scripts/run_benchmark.py](scripts/run_benchmark.py)
+- Skill (automated pipeline): [.github/skills/benchmark-eval/SKILL.md](.github/skills/benchmark-eval/SKILL.md)
+
+### Agent token benchmark
+
+- Report: [docs/agent-token-benchmark.md](docs/agent-token-benchmark.md)
+- Script: [scripts/copilot_sdk_benchmark.py](scripts/copilot_sdk_benchmark.py)
+- Navigator skill: [.github/skills/codebase-insights-navigator/SKILL.md](.github/skills/codebase-insights-navigator/SKILL.md)
 
 ## License
 
