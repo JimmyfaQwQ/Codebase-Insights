@@ -78,7 +78,7 @@ The key is **prompt design**: CI tools must be used as a *substitute* for file b
 3. `get_file_summary` — scan cheaply; skip `view` if the summary suffices
 4. `view` with line ranges — read only confirmed-relevant sections
 
-The reusable skill (prompt template + workflow reference) is at [`.github/skills/codebase-insights-navigator/SKILL.md`](.github/skills/codebase-insights-navigator/SKILL.md).  
+The reusable instructions (prompt template + workflow reference) are at [`docs/agent-navigator-instructions.md`](docs/agent-navigator-instructions.md).  
 Full benchmark report: [docs/agent-token-benchmark.md](docs/agent-token-benchmark.md)
 
 ---
@@ -364,13 +364,10 @@ scripts/
 ├── run_benchmark.py          Benchmark orchestrator (indexing, retrieval, LSP)
 └── copilot_sdk_benchmark.py  Agent token A/B benchmark (baseline vs CI-as-navigator)
 
-.github/skills/
-├── benchmark-eval/           Skill: run the full indexing/retrieval benchmark pipeline
-└── codebase-insights-navigator/  Skill: navigate-then-read prompt + workflow reference
-
 docs/
-├── benchmark-v*.md           Versioned indexing/retrieval benchmark reports
-└── agent-token-benchmark.md  Agent token A/B benchmark report
+├── benchmark-v*.md                Versioned indexing/retrieval benchmark reports
+├── agent-token-benchmark.md       Agent token A/B benchmark report (v1.1.0)
+└── agent-navigator-instructions.md  Prompt template and workflow reference for agents
 ```
 
 ## Files created in the indexed repository
@@ -402,9 +399,9 @@ If the target repository already has a `.gitignore`, Codebase Insights automatic
 
 ### Agent token benchmark
 
-- Report: [docs/agent-token-benchmark.md](docs/agent-token-benchmark.md)
+- Report: [docs/agent-token-benchmark.md](docs/agent-token-benchmark.md) (v1.1.0)
 - Script: [scripts/copilot_sdk_benchmark.py](scripts/copilot_sdk_benchmark.py)
-- Navigator skill: [.github/skills/codebase-insights-navigator/SKILL.md](.github/skills/codebase-insights-navigator/SKILL.md)
+- Navigator instructions: [docs/agent-navigator-instructions.md](docs/agent-navigator-instructions.md)
 
 ## License
 

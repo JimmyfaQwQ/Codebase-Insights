@@ -1,6 +1,7 @@
-# Agent Token Benchmark — Codebase Insights as a Navigator
+# Agent Token Benchmark — Codebase Insights v1.1.0
 
 **Date:** 2026-04-18  
+**Codebase Insights version:** `1.1.0`  
 **Model:** `gpt-5-mini` (temperature=0)  
 **Task:** Implement a new Google Gemini AI provider in SyntaxSenpai  
 **Target repository:** `G:\SyntaxSenpai` (Electron + React + React Native monorepo)  
