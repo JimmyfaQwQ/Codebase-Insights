@@ -4,16 +4,18 @@ copilot_sdk_benchmark.py — Copilot SDK Token Consumption Benchmark
 Compares token usage when the Copilot agent tackles the same programming task
 with and without Codebase Insights MCP server connected.
 
-The Copilot SDK has built-in context compaction, so this benchmark tests
-whether its smarter orchestration engine reduces the token overhead we
-observed with a naive LangGraph ReAct agent (+79-234%).
+The key design principle for the enhanced mode prompt: CI tools must be used
+as a SUBSTITUTE for manual file browsing — not a warm-up before it. The prompt
+explicitly teaches the agent a navigate-then-read workflow:
+  1. get_project_summary  → orient, no file reads yet
+  2. search_files / semantic_search / query_symbols  → pinpoint exact files/symbols
+  3. get_file_summary  → scan candidates cheaply; skip full read if summary suffices
+  4. view (line ranges only)  → read only confirmed-relevant sections
 
 Results (gpt-5-mini, SyntaxSenpai — Gemini provider task):
-    Baseline: 212,071 tokens (10 turns, 10 views)
-    Enhanced: 808,596 tokens (25 turns, +281%) — CI tools used but additive
-    Compactions: 0 in both — context never exceeded compaction threshold
-    Key finding: CI tools guide navigation but agent still does full file reads
-    on top, and takes more turns to edit/test code.
+    Baseline (v2): 212K tokens (10 turns, 10 views)
+    Enhanced (v1, vague prompt): 809K tokens (25 turns, +281%)
+    Enhanced (v2, CI-as-navigator): see latest benchmark_results/
 
 Usage:
     # Baseline (no MCP):
@@ -30,6 +32,7 @@ Requirements:
     - github-copilot-sdk (pip install github-copilot-sdk)
     - Copilot CLI installed and authenticated (copilot --version)
     - For enhanced mode: Codebase Insights MCP server running on port 6789
+    - Note: MCPRemoteServerConfig requires explicit tools= list (not empty)
 """
 
 from __future__ import annotations
@@ -62,17 +65,17 @@ CODING_TASK = textwrap.dedent("""\
     Your task: Write a NEW AI provider implementation for **Google Gemini**.
 
     Steps:
-    1. Understand how existing AI providers (OpenAI, Anthropic, etc.) are
-       structured — find the provider directory, look at the types/interfaces,
-       and study one existing provider as a reference.
+    1. Explore the codebase to understand how existing AI providers (OpenAI,
+       Anthropic, etc.) are structured — find the provider directory, look at
+       the types/interfaces, and study one existing provider as a reference.
     2. Write the COMPLETE implementation of a new Gemini provider file that
        follows the exact same patterns. The file should:
        - Export a class/function matching the existing provider interface
        - Support streaming chat completions
        - Handle tool calls in the same format as other providers
        - Map Gemini-specific types to the shared message format
+    3. Write the file to disk at the appropriate location.
 
-    Output your final answer as the complete source code for the new provider file.
     Important: actually read the relevant source code first. Do NOT guess.
 """)
 
@@ -80,27 +83,51 @@ CODING_TASK_ENHANCED = textwrap.dedent("""\
     You are working on the SyntaxSenpai project (a cross-platform AI companion app
     built with Electron + React).
 
-    You have access to a "codebase-insights" MCP server with semantic search, project
-    summaries, file summaries, and symbol queries. **Use these tools first** to
-    understand the project structure and find the relevant provider code, rather than
-    manually browsing the file tree.
+    You have access to a "codebase-insights" MCP server. These tools give you
+    pre-computed intelligence about the codebase — **use them as a substitute for
+    manual file browsing, not as a warm-up before it**.
 
-    Your task: Write a NEW AI provider implementation for **Google Gemini**.
+    ## How to use codebase-insights efficiently
 
-    Steps:
-    1. Use the codebase-insights tools (get_project_summary, search_files,
-       semantic_search, get_file_summary, query_symbols) to quickly understand
-       how existing AI providers (OpenAI, Anthropic, etc.) are structured.
-    2. Read the key source files identified by the codebase-insights tools.
-    3. Write the COMPLETE implementation of a new Gemini provider file that
-       follows the exact same patterns. The file should:
-       - Export a class/function matching the existing provider interface
-       - Support streaming chat completions
-       - Handle tool calls in the same format as other providers
-       - Map Gemini-specific types to the shared message format
+    The goal is to read as FEW raw source files as possible while still getting
+    the information you need. Follow this workflow:
 
-    Output your final answer as the complete source code for the new provider file.
-    Important: actually read the relevant source code first. Do NOT guess.
+    STEP 1 — Orient yourself (do NOT browse files yet):
+      - `get_project_summary` → architecture overview, which modules own what
+
+    STEP 2 — Find exactly what you need (do NOT glob/grep):
+      - `search_files` to locate files by description, e.g. "AI provider OpenAI"
+      - `semantic_search` to find specific patterns, e.g. "streaming chat completion"
+      - `query_symbols` to find interfaces/types by name, e.g. kind=Interface
+
+    STEP 3 — Scan candidates cheaply before opening them:
+      - `get_file_summary` on any file you're considering reading
+      - If the summary already answers your question → SKIP the full file read
+      - Only `view` files whose summary confirms they contain what you need
+
+    STEP 4 — Precision reading:
+      - When you do `view`, use line ranges to read only the relevant section
+      - Use `query_symbols` to find the exact line of a class/function first
+
+    The measure of success: complete the task with the fewest `view` calls.
+    Every `view` call you replace with a CI tool call saves tokens.
+
+    ## Task
+
+    Write a NEW AI provider implementation for **Google Gemini**.
+
+    1. Use the workflow above to understand how existing providers (OpenAI,
+       Anthropic, etc.) are structured — the interface they implement, the
+       file/class patterns, how streaming and tool calls work.
+    2. You should need to `view` at most 2-3 files in total.
+    3. Write the COMPLETE implementation of a new Gemini provider file that:
+       - Exports a class/function matching the existing provider interface
+       - Supports streaming chat completions
+       - Handles tool calls in the same format as other providers
+       - Maps Gemini-specific types to the shared message format
+    4. Write the file to disk at the appropriate location.
+
+    Do NOT use glob, do NOT browse directories. Let codebase-insights navigate for you.
 """)
 
 
