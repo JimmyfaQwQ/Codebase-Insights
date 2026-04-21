@@ -22,7 +22,7 @@ from enum import Enum, auto
 from typing import Optional
 from urllib.parse import unquote
 
-from tqdm import tqdm
+from .cli_io import tqdm
 
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
 from watchdog.observers import Observer
@@ -355,6 +355,7 @@ class WorkspaceIndexer:
             _DB_FILENAME, f"{_DB_FILENAME}-shm", f"{_DB_FILENAME}-wal",
             ".codebase-semantic/",
             ".codebase-insights.toml",
+            ".codebase-insights.lock.toml",
         ]
         missing = [e for e in _db_entries if e not in contents]
         if missing:

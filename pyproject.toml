@@ -13,6 +13,7 @@ dependencies = [
     "mcp[cli]>=1.27.0",
     "tqdm>=4.67.3",
     "watchdog>=4.0.0",
+    "textual>=0.86",
     "langchain>=0.3",
     "langchain-ollama>=0.3",
     "langchain-openai>=0.3",

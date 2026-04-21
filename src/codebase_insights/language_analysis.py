@@ -2,6 +2,8 @@ import os
 import enum
 import time
 
+from . import cli_io
+
 
 class Language(enum.Enum):
     PYTHON = "python"
@@ -59,6 +61,8 @@ def decend_into_directory(root_dir: str, detected_languages: set[Language]):
     t_start = time.monotonic()
     t_last  = 0.0
 
+    bar = cli_io.tqdm(total=None, desc="[Status] Scanning workspace", unit="file", section="status")
+
     def _print_progress():
         nonlocal t_last
         now = time.monotonic()
@@ -67,11 +71,7 @@ def decend_into_directory(root_dir: str, detected_languages: set[Language]):
         t_last = now
         elapsed = now - t_start
         rate = n / elapsed if elapsed > 0 else 0
-        n_str = f"{n/1000:.1f}k" if n >= 1000 else str(n)
-        rate_str = (f"{rate/1000:.2f}k" if rate >= 1000 else f"{rate:.2f}") + " files/s"
-        e = int(elapsed)
-        elapsed_str = f"{e//3600}:{(e%3600)//60:02}:{e%60:02}" if e >= 3600 else f"{e//60}:{e%60:02}"
-        print(f"\rScanning: {n_str} files @ {rate_str} [{elapsed_str}]\033[K", end="", flush=True)
+        bar.set_postfix(rate=f"{rate:.1f}/s", elapsed=f"{elapsed:.1f}s")
 
     # Single pass: parse .gitignore, prune, and scan files together
     for dirpath, dirnames, filenames in os.walk(root_dir, topdown=True):
@@ -90,8 +90,9 @@ def decend_into_directory(root_dir: str, detected_languages: set[Language]):
             if lang is not None:
                 detected_languages.add(lang)
             n += 1
+            bar.update(1)
             _print_progress()
-    print("\r\033[K", end="")  # clear the progress line after done
+    bar.close()
 
 
 def detect_language(file_path: str) -> Language | None:
