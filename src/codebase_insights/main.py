@@ -402,7 +402,14 @@ def _main_inner():
         return
 
     # Lazy-import the TUI so plain --no-tui runs don't pay the textual import cost.
-    from . import tui
+    try:
+        from . import tui
+    except ImportError:
+        # textual not installed — fall back to plain mode gracefully.
+        cli_io.set_no_tui(True)
+        cli_io.install_logging()
+        _do_startup_work(args, project_root, detected_languages, sem_indexer_factory)
+        return
 
     def worker(_app):
         try:
