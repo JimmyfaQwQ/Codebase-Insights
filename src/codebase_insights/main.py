@@ -360,6 +360,11 @@ def main():
                   "chromadb", "posthog"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
+    # Auto-disable TUI when stdout is not a real terminal (piped, redirected,
+    # or running inside a benchmark/CI subprocess). Textual requires a TTY.
+    if not args.no_tui and not sys.stdout.isatty():
+        args.no_tui = True
+
     if not args.no_tui:
         # Enable print redirect + pre-buffering NOW, before _bootstrap(), so
         # any log lines emitted during language detection or config loading are
