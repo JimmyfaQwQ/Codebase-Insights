@@ -67,6 +67,8 @@ The difference matters most on concept-heavy tasks where the names are not obvio
 
 ## Benchmark Highlights
 
+> **v1.2.0 note:** this release is a pure TUI and infrastructure change (Textual CLI, section-routed logging, builtins.print patch, debounce removal). No indexing or retrieval logic changed, so the v1.1.1 numbers below still represent the current retrieval quality and token savings.
+
 ### Agent token benchmark
 
 The most recent five demo-agent benchmark runs all used the same model, the same task (`syntaxsenpai-backup-import-restore`), and the same baseline vs enhanced comparison in `scripts/demo_agent_benchmark.py`.
@@ -278,6 +280,7 @@ LSP calls accept either `file:///...` URIs or absolute filesystem paths.
 | `.codebase-index.db` | Persistent SQLite symbol and reference database |
 | `.codebase-semantic/` | ChromaDB data for symbol and file summaries |
 | `.codebase-insights.toml` | Local provider and indexing configuration |
+| `.codebase-insights.lock.toml` | Records the active embedding model to detect configuration drift |
 
 If the target repo already has a `.gitignore`, Codebase Insights automatically adds `.codebase-index.db` to it. The other generated artifacts should also be ignored in normal use.
 
@@ -286,10 +289,12 @@ If the target repo already has a `.gitignore`, Codebase Insights automatically a
 ```text
 src/codebase_insights/
 ├── main.py              CLI entry point and startup orchestration
+├── cli_io.py            Section-routed I/O facade and builtins.print patch for TUI
+├── tui.py               Textual TUI app (section switcher, overview, semantic watch)
 ├── LSP.py               LSP client wrapper
 ├── language_analysis.py Language detection and .gitignore parsing
 ├── workspace_indexer.py SQLite symbol/reference index plus file watching
-├── semantic_config.py   Config loading and first-run setup wizard
+├── semantic_config.py   Config loading, first-run setup wizard, embed lock file
 ├── semantic_indexer.py  LLM summaries, embeddings, ranking, file/project summaries
 ├── mcp_server.py        MCP tool surface
 
