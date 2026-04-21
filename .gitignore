@@ -11,3 +11,5 @@ wheels/
 
 .vscode
 benchmark_results/
+codebase-insights-diag.log
+codebase-insights-crash.log

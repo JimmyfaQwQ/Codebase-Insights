@@ -347,6 +347,25 @@ def _do_startup_work(args: argparse.Namespace, project_root: str,
 
 
 def main():
+    import traceback
+    _crash_log = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "..", "..", "codebase-insights-crash.log")
+    try:
+        _main_inner()
+    except SystemExit:
+        raise
+    except Exception:
+        msg = traceback.format_exc()
+        try:
+            with open(_crash_log, "w") as _f:
+                _f.write(msg)
+        except Exception:
+            pass
+        print(msg, file=sys.stderr)
+        sys.exit(1)
+
+
+def _main_inner():
     args = _parse_args()
     project_root = canonical_path(args.project_root)
 
