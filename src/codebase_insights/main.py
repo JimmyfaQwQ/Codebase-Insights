@@ -146,7 +146,7 @@ def main():
     # ────────────────────────────────────────────────────────────────────
 
     try:
-        mcp_server.run_server(lsp_clients, project_root, semantic_indexer=sem_indexer)
+        mcp_server.run_server(lsp_clients, project_root, semantic_indexer=sem_indexer, indexer=indexer)
     finally:
         print("Shutting down indexer and LSP clients...")
         indexer.stop()

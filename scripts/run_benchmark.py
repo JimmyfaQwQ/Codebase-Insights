@@ -11,7 +11,7 @@ human judgment:
   Phase 3  Incremental A–G     (server lifecycle + file edits + idle timers)
   Phase 4  Retrieval quality   (query execution; scoring is manual)
   Phase 5  LSP navigation      (MCP tool matrix against running server)
-  Phase 7  Report generation   (writes docs/benchmark-v<VER>.md)
+    Phase 7  Report generation   (writes benchmarks/benchmark-v<VER>.md)
 
 Phase 6 (bug triage) is not automatable.
 
@@ -34,6 +34,12 @@ Options
     --project-idle-timeout N     Expected summary_project_idle_timeout from target config
                                  (default: 0, meaning skip Scenario G). Set to the value
                                  configured in the target repo to enable Scenario G.
+
+Cleanup
+-------
+    benchmark_results/ is local scratch output. After you have checked the
+    generated report and committed the benchmark markdown under benchmarks/,
+    delete benchmark_results/ so logs and raw JSON do not accumulate.
 """
 
 from __future__ import annotations
@@ -1400,7 +1406,7 @@ def phase5_lsp_navigation(target_repo: str, state: dict) -> None:
 def phase7_report(target_repo: str, version: str, output_dir: Path, state: dict) -> None:
     print("\n=== Phase 7: Report generation ===")
 
-    report_path = _REPO_ROOT / "docs" / f"benchmark-v{version}.md"
+    report_path = _REPO_ROOT / "benchmarks" / f"benchmark-v{version}.md"
     date_str = datetime.now().strftime("%Y-%m-%d")
 
     preflight   = state.get("preflight", {})
@@ -1722,6 +1728,9 @@ def phase7_report(target_repo: str, version: str, output_dir: Path, state: dict)
     with open(state_path, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, default=str)
     print(f"  Raw state: {state_path}")
+    print("  Cleanup reminder: benchmark_results/ is local scratch output.")
+    print("  After the report is finalized and committed, delete benchmark_results/.")
+    print("  PowerShell: Remove-Item -Recurse -Force benchmark_results")
 
 
 # ---------------------------------------------------------------------------

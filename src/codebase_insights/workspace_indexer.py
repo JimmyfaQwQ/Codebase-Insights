@@ -305,6 +305,7 @@ class WorkspaceIndexer:
         # Queue of absolute paths that need (re)indexing / removal
         self._queue: list[str] = []
         self._queue_lock = threading.Lock()
+        self._initial_pass_done: bool = False
 
     # ------------------------------------------------------------------
     # Public interface
@@ -663,6 +664,7 @@ class WorkspaceIndexer:
     def _run(self):
         """Entry point for the background indexer thread."""
         self._initial_pass()
+        self._initial_pass_done = True
         self._start_watchdog()
         self._drain_watchdog_queue()   # blocks until _stop_event is set
 

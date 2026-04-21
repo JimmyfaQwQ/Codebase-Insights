@@ -27,6 +27,7 @@ mcp = FastMCP(
 _clients: dict[Language, LSP.LSPClient] | None = None
 _root_dir: str | None = None
 _semantic_indexer = None  # Optional SemanticIndexer instance
+_indexer = None           # Optional WorkspaceIndexer instance (for readiness check)
 
 
 def _require_clients() -> dict[Language, LSP.LSPClient]:
@@ -693,12 +694,28 @@ def refresh_project_summary() -> dict:
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 
-def run_server(clients: dict[Language, LSP.LSPClient], root_dir: str, semantic_indexer=None, host: str = "127.0.0.1", port: int = 6789) -> None:
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request) -> "Response":
+    """Liveness + readiness probe.
+
+    Returns HTTP 200 ``{"status": "ready"}`` once the initial symbol-index
+    pass has finished (or if no indexer is registered).
+    Returns HTTP 503 ``{"status": "indexing"}`` while the initial pass is
+    still running.
+    """
+    from starlette.responses import JSONResponse
+    if _indexer is None or _indexer._initial_pass_done:
+        return JSONResponse({"status": "ready"})
+    return JSONResponse({"status": "indexing"}, status_code=503)
+
+
+def run_server(clients: dict[Language, LSP.LSPClient], root_dir: str, semantic_indexer=None, indexer=None, host: str = "127.0.0.1", port: int = 6789) -> None:
     """Set the shared LSP client and start the MCP HTTP server (blocking)."""
-    global _clients, _root_dir, _semantic_indexer
+    global _clients, _root_dir, _semantic_indexer, _indexer
     _clients = clients
     _root_dir = root_dir
     _semantic_indexer = semantic_indexer
+    _indexer = indexer
     mcp.settings.host = host
     mcp.settings.port = port
     mcp.run(transport="streamable-http")
