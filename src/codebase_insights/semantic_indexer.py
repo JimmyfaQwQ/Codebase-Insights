@@ -19,7 +19,7 @@ import threading
 import time
 from typing import Optional
 
-from tqdm import tqdm
+from .cli_io import tqdm
 from langchain_core.language_models import BaseChatModel
 from langchain_core.embeddings import Embeddings
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -289,12 +289,6 @@ CREATE TABLE IF NOT EXISTS project_summary_sources (
 );
 """
 
-# Debounce window for project summary regeneration during incremental updates.
-# When multiple files are edited in rapid succession (e.g. a Save-All), each
-# watchdog event would otherwise trigger a 100-130s project summary pass.
-# The debounce coalesces all edits within this window into a single pass.
-_PROJECT_SUMMARY_DEBOUNCE_S = 30.0
-
 # Fraction of files that may change before falling back to full regeneration
 _INCREMENTAL_THRESHOLD = 0.3
 
@@ -367,8 +361,6 @@ class SemanticIndexer:
         self._batch_size = semantic_batch_size()
         self._min_ref_count = semantic_min_ref_count()
         self._lock = threading.Lock()
-        self._project_summary_timer: threading.Timer | None = None
-        self._project_summary_timer_lock = threading.Lock()
         self._summary_update_threshold = semantic_summary_update_threshold()
         self._summary_file_idle_timeout = semantic_summary_file_idle_timeout()
         self._summary_project_idle_timeout = semantic_summary_project_idle_timeout()
@@ -560,47 +552,6 @@ class SemanticIndexer:
         return ref_count_map
 
     # ------------------------------------------------------------------
-    # Project summary debounce helpers
-    # ------------------------------------------------------------------
-
-    def _schedule_project_summary(self, debounce: bool = False) -> None:
-        """Trigger project summary regeneration, optionally after a debounce delay.
-
-        When ``debounce=True`` (incremental/watchdog updates), the call is
-        deferred by ``_PROJECT_SUMMARY_DEBOUNCE_S`` seconds.  If another edit
-        arrives within the window the timer is reset, coalescing all changes
-        into a single project-summary pass.
-
-        When ``debounce=False`` (initial full rebuild), the project summary is
-        generated immediately in the calling thread.
-        """
-        if not debounce:
-            self._index_project_summary()
-            return
-        with self._project_summary_timer_lock:
-            if self._project_summary_timer is not None:
-                self._project_summary_timer.cancel()
-            self._project_summary_timer = threading.Timer(
-                _PROJECT_SUMMARY_DEBOUNCE_S, self._run_debounced_project_summary
-            )
-            self._project_summary_timer.daemon = True
-            self._project_summary_timer.start()
-            print(
-                f"[Semantic] Project summary scheduled in "
-                f"{_PROJECT_SUMMARY_DEBOUNCE_S:.0f}s (debounce).",
-                flush=True,
-            )
-
-    def _run_debounced_project_summary(self) -> None:
-        """Timer callback: clear the pending timer reference then run the summary."""
-        with self._project_summary_timer_lock:
-            self._project_summary_timer = None
-        try:
-            self._index_project_summary()
-        except Exception as e:
-            print(f"[Semantic] Error in debounced project summary: {e}")
-
-    # ------------------------------------------------------------------
     # Idle-timeout helpers
     # ------------------------------------------------------------------
 
@@ -619,6 +570,7 @@ class SemanticIndexer:
                 timeout, self._run_file_idle_summary, args=(file_path,)
             )
             timer.daemon = True
+            timer._fire_at = time.monotonic() + timeout  # type: ignore[attr-defined]
             timer.start()
             self._file_idle_timers[file_path] = timer
 
@@ -660,10 +612,13 @@ class SemanticIndexer:
                 self._generate_file_summaries([file_path], force=True)
             except Exception as e:
                 print(f"[Semantic] Error in file idle summary for {file_path}: {e}")
-        try:
-            self._schedule_project_summary(debounce=True)
-        except Exception as e:
-            print(f"[Semantic] Error scheduling project summary after file idle: {e}")
+        # Reset the project idle countdown so the project summary is eventually
+        # regenerated after this (and any other pending) file summaries are done.
+        if self._summary_project_idle_timeout > 0:
+            try:
+                self._schedule_project_idle_summary(self._summary_project_idle_timeout)
+            except Exception as e:
+                print(f"[Semantic] Error scheduling project idle summary after file idle: {e}")
 
     def _schedule_project_idle_summary(self, timeout: float) -> None:
         """Schedule (or reset) the project-level idle regeneration timer.
@@ -679,6 +634,7 @@ class SemanticIndexer:
                 self._project_idle_timer.cancel()
             timer = threading.Timer(timeout, self._run_project_idle_summary)
             timer.daemon = True
+            timer._fire_at = time.monotonic() + timeout  # type: ignore[attr-defined]
             timer.start()
             self._project_idle_timer = timer
         print(
@@ -738,94 +694,50 @@ class SemanticIndexer:
     # Public API
     # ------------------------------------------------------------------
 
-    def index_symbols(self, symbol_ids: list[int] | None = None, debounce: bool = False):
-        """
-        Generate summaries and embeddings for symbols that need processing.
-        If symbol_ids is None, processes all eligible symbols that are missing
-        or have stale summaries.
+    def get_watch_snapshot(self) -> dict:
+        """Return a live monitoring snapshot for the TUI Semantic Watch panel.
 
-        Args:
-            symbol_ids: Specific symbol IDs to process, or None for a full pass.
-            debounce: When True, project summary regeneration is deferred by
-                      ``_PROJECT_SUMMARY_DEBOUNCE_S`` seconds so that rapid
-                      successive edits (watchdog events) are coalesced into one
-                      expensive LLM call instead of one per file.
-        """
-        with self._lock:
-            try:
-                # Snapshot pending paths so we can detect newly-stale files after
-                # _generate_file_summaries returns (used for per-file idle timers).
-                pending_before = set(self._pending_stale_paths)
-                affected_files = self._do_index(symbol_ids)
-                # For file summaries we want ALL files that have any symbols, not
-                # just those whose symbols met the kind/ref_count eligibility criteria.
-                # _generate_file_summaries uses structural_hash to skip unchanged files
-                # so passing the full list is safe and idempotent.
-                if symbol_ids is None:
-                    # Full pass: check every indexed file, including those with no symbols.
-                    try:
-                        con = sqlite3.connect(self._db_path, check_same_thread=False)
-                        con.row_factory = sqlite3.Row
-                        all_files = [
-                            r[0] for r in con.execute(
-                                "SELECT file_path FROM file_hashes ORDER BY file_path"
-                            ).fetchall()
-                        ]
-                        con.close()
-                    except sqlite3.Error:
-                        all_files = affected_files
-                    self._generate_file_summaries(all_files, force=True)
-                else:
-                    # Incremental: only re-check files touched by this batch,
-                    # plus any that are still missing a summary.
-                    try:
-                        con = sqlite3.connect(self._db_path, check_same_thread=False)
-                        con.row_factory = sqlite3.Row
-                        unsummarised = [
-                            r[0] for r in con.execute(
-                                "SELECT DISTINCT s.file_path FROM symbols s "
-                                "LEFT JOIN file_summaries fs ON fs.file_path = s.file_path "
-                                "WHERE fs.file_path IS NULL"
-                            ).fetchall()
-                        ]
-                        con.close()
-                    except sqlite3.Error:
-                        unsummarised = []
-                    self._generate_file_summaries(list(set(affected_files) | set(unsummarised)), force=False)
-                self._schedule_project_summary(debounce=debounce)
-                # Capture newly-stale files to schedule per-file idle timers after
-                # releasing the lock (scheduling inside the lock would risk deadlock).
-                newly_stale = list(self._pending_stale_paths - pending_before)
-                has_pending = bool(self._pending_stale_paths)
-            except Exception as e:
-                print(f"[Semantic] Error during indexing: {e}")
-                newly_stale = []
-                has_pending = False
-            # ── DB size snapshot ────────────────────────────────────────────
-            try:
-                import pathlib
-                _db_size = os.path.getsize(self._db_path) if os.path.exists(self._db_path) else 0
-                _chroma_path = pathlib.Path(self._chroma_dir)
-                _chroma_size = (
-                    sum(f.stat().st_size for f in _chroma_path.rglob("*") if f.is_file())
-                    if _chroma_path.is_dir() else 0
-                )
-                print(
-                    f"[BENCHMARK:SIZES] sqlite_bytes={_db_size} "
-                    f"chroma_bytes={_chroma_size} "
-                    f"sqlite_mb={_db_size / 1048576:.2f} "
-                    f"chroma_mb={_chroma_size / 1048576:.2f}",
-                    flush=True,
-                )
-            except Exception:
-                pass
+        This method is safe to call from any thread and holds no heavy locks.
+        The returned dict contains:
 
-        # ── Schedule idle timers (outside self._lock to prevent deadlock) ───
-        if debounce and newly_stale and self._summary_file_idle_timeout > 0:
-            for fp in newly_stale:
-                self._schedule_file_idle_summary(fp, self._summary_file_idle_timeout)
-        if debounce and has_pending and self._summary_project_idle_timeout > 0:
-            self._schedule_project_idle_summary(self._summary_project_idle_timeout)
+        - ``threshold``              int   – files needed before auto-regeneration
+        - ``file_idle_timeout``      float – per-file idle timeout (seconds, 0=disabled)
+        - ``project_idle_timeout``   float – project idle timeout (seconds, 0=disabled)
+        - ``pending_stale_paths``    list[str] – files queued but not yet regenerated
+        - ``project_idle_remaining`` float|None – seconds until project idle timer fires
+        - ``file_timers``            dict[str, float] – file_path → seconds remaining
+        """
+        now = time.monotonic()
+
+        # Pending stale paths (in-memory queue)
+        pending = sorted(self._pending_stale_paths)
+
+        # Project idle timer
+        project_idle_remaining: float | None = None
+        with self._project_idle_timer_lock:
+            t = self._project_idle_timer
+            if t is not None and t.is_alive():
+                fire_at = getattr(t, "_fire_at", None)
+                if fire_at is not None:
+                    project_idle_remaining = max(0.0, fire_at - now)
+
+        # Per-file idle timers
+        file_timers: dict[str, float] = {}
+        with self._file_idle_timers_lock:
+            for fp, timer in self._file_idle_timers.items():
+                if timer.is_alive():
+                    fire_at = getattr(timer, "_fire_at", None)
+                    if fire_at is not None:
+                        file_timers[fp] = max(0.0, fire_at - now)
+
+        return {
+            "threshold":              self._summary_update_threshold,
+            "file_idle_timeout":      self._summary_file_idle_timeout,
+            "project_idle_timeout":   self._summary_project_idle_timeout,
+            "pending_stale_paths":    pending,
+            "project_idle_remaining": project_idle_remaining,
+            "file_timers":            file_timers,
+        }
 
     def refresh_file_summary(self, file_path: str) -> dict:
         """Force-regenerate the AI summary for a single file, ignoring the change
@@ -853,10 +765,13 @@ class SemanticIndexer:
                 self._generate_file_summaries([norm], force=True)
             except Exception as e:
                 return {"error": f"Failed to refresh file summary: {e}"}
-        try:
-            self._schedule_project_summary(debounce=True)
-        except Exception as e:
-            print(f"[Semantic] Error scheduling project summary after file refresh: {e}")
+        # Reset the project idle countdown so the project summary is eventually
+        # regenerated after this manual file refresh.
+        if self._summary_project_idle_timeout > 0:
+            try:
+                self._schedule_project_idle_summary(self._summary_project_idle_timeout)
+            except Exception as e:
+                print(f"[Semantic] Error scheduling project idle summary after file refresh: {e}")
         return {"result": f"File summary refreshed for: {norm}"}
 
     def refresh_project_summary(self) -> dict:
@@ -899,12 +814,13 @@ class SemanticIndexer:
             except Exception as e:
                 print(f"[Semantic] Error removing file {file_path}: {e}")
                 return
-        # Debounce: file removal is a watchdog event — coalesce with other rapid
-        # changes rather than immediately triggering a 100-130s project summary pass.
-        try:
-            self._schedule_project_summary(debounce=True)
-        except Exception as e:
-            print(f"[Semantic] Error scheduling project summary after file removal: {e}")
+        # Schedule the project idle timer so the project summary is eventually
+        # regenerated after this and any other pending removals.
+        if self._summary_project_idle_timeout > 0:
+            try:
+                self._schedule_project_idle_summary(self._summary_project_idle_timeout)
+            except Exception as e:
+                print(f"[Semantic] Error scheduling project idle summary after file removal: {e}")
 
     def clear_semantic(self):
         """Wipe all summaries and the ChromaDB store so everything is re-generated."""
@@ -1430,6 +1346,91 @@ class SemanticIndexer:
             flush=True,
         )
         return {"result": final, "count": len(final)}
+
+    # ------------------------------------------------------------------
+    # Public indexing entry point
+    # ------------------------------------------------------------------
+
+    def index_symbols(self, symbol_ids: list[int] | None = None, debounce: bool = False):
+        """Generate summaries and embeddings for symbols that need processing.
+
+        Args:
+            symbol_ids: Specific symbol IDs to process, or None for a full pass.
+            debounce: When True (watchdog/incremental updates), project summary
+                      regeneration is deferred to the project idle timeout.
+                      When False (initial full rebuild), the project summary is
+                      generated immediately in the calling thread.
+        """
+        with self._lock:
+            try:
+                pending_before = set(self._pending_stale_paths)
+                affected_files = self._do_index(symbol_ids)
+                if symbol_ids is None:
+                    # Full pass: check every indexed file.
+                    try:
+                        con = sqlite3.connect(self._db_path, check_same_thread=False)
+                        con.row_factory = sqlite3.Row
+                        all_files = [
+                            r[0] for r in con.execute(
+                                "SELECT file_path FROM file_hashes ORDER BY file_path"
+                            ).fetchall()
+                        ]
+                        con.close()
+                    except sqlite3.Error:
+                        all_files = affected_files
+                    self._generate_file_summaries(all_files, force=True)
+                else:
+                    # Incremental: re-check touched files plus any still missing summaries.
+                    try:
+                        con = sqlite3.connect(self._db_path, check_same_thread=False)
+                        con.row_factory = sqlite3.Row
+                        unsummarised = [
+                            r[0] for r in con.execute(
+                                "SELECT DISTINCT s.file_path FROM symbols s "
+                                "LEFT JOIN file_summaries fs ON fs.file_path = s.file_path "
+                                "WHERE fs.file_path IS NULL"
+                            ).fetchall()
+                        ]
+                        con.close()
+                    except sqlite3.Error:
+                        unsummarised = []
+                    self._generate_file_summaries(
+                        list(set(affected_files) | set(unsummarised)), force=False
+                    )
+                if not debounce:
+                    # Initial full rebuild: generate project summary immediately.
+                    self._index_project_summary()
+                newly_stale = list(self._pending_stale_paths - pending_before)
+                has_pending = bool(self._pending_stale_paths)
+            except Exception as e:
+                print(f"[Semantic] Error during indexing: {e}")
+                newly_stale = []
+                has_pending = False
+            # DB size snapshot for benchmarking
+            try:
+                import pathlib
+                _db_size = os.path.getsize(self._db_path) if os.path.exists(self._db_path) else 0
+                _chroma_path = pathlib.Path(self._chroma_dir)
+                _chroma_size = (
+                    sum(f.stat().st_size for f in _chroma_path.rglob("*") if f.is_file())
+                    if _chroma_path.is_dir() else 0
+                )
+                print(
+                    f"[BENCHMARK:SIZES] sqlite_bytes={_db_size} "
+                    f"chroma_bytes={_chroma_size} "
+                    f"sqlite_mb={_db_size / 1048576:.2f} "
+                    f"chroma_mb={_chroma_size / 1048576:.2f}",
+                    flush=True,
+                )
+            except Exception:
+                pass
+
+        # Schedule idle timers outside self._lock to prevent deadlock.
+        if debounce and newly_stale and self._summary_file_idle_timeout > 0:
+            for fp in newly_stale:
+                self._schedule_file_idle_summary(fp, self._summary_file_idle_timeout)
+        if debounce and has_pending and self._summary_project_idle_timeout > 0:
+            self._schedule_project_idle_summary(self._summary_project_idle_timeout)
 
     # ------------------------------------------------------------------
     # Internal: indexing pipeline
