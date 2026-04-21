@@ -18,6 +18,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.embeddings import Embeddings
 
 _CONFIG_FILENAME = ".codebase-insights.toml"
+_LOCK_FILENAME   = ".codebase-insights.lock.toml"
 
 _DEFAULT_CONFIG: dict = {
     "chat": {
@@ -455,3 +456,71 @@ def _interactive_setup(config_path: str):
 
     print(f"\n  Config saved to {config_path}")
     print("=" * 60 + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Embed config lock file
+# ---------------------------------------------------------------------------
+
+def _embed_fingerprint(cfg: dict) -> dict:
+    """Extract the embed-relevant fields that affect the ChromaDB vectors."""
+    embed = cfg.get("embed", {})
+    provider = embed.get("provider", "ollama").strip().lower()
+    if provider == "openai":
+        c = embed.get("openai", {})
+        return {
+            "provider": "openai",
+            "base_url": c.get("base_url", "").strip(),
+            "model":    c.get("model", "text-embedding-3-small").strip(),
+        }
+    # ollama (default)
+    c = embed.get("ollama", {})
+    return {
+        "provider": "ollama",
+        "base_url": c.get("base_url", "http://localhost:11434").strip(),
+        "model":    c.get("model", "bge-m3").strip(),
+    }
+
+
+def check_embed_lock(root_dir: str) -> None:
+    """Compare the current embed config against the lock file.
+
+    If the lock file exists and the embed fingerprint has changed, print an
+    error message and raise ``SystemExit`` so the caller can abort cleanly.
+    Does nothing when the lock file is absent (first run).
+    """
+    lock_path = os.path.join(root_dir, _LOCK_FILENAME)
+    if not os.path.isfile(lock_path):
+        return  # first run — no lock yet
+    with open(lock_path, "rb") as f:
+        locked: dict = tomllib.load(f).get("embed", {})
+    current = _embed_fingerprint(get_config())
+    if locked != current:
+        print("\n[Config] ERROR: The embedding configuration has changed since the last run.")
+        print(f"  Locked : provider={locked.get('provider')}  model={locked.get('model')}  base_url={locked.get('base_url')}")
+        print(f"  Current: provider={current['provider']}  model={current['model']}  base_url={current['base_url']}")
+        print("\n  The existing ChromaDB vectors are no longer compatible with the new model.")
+        print("  Please re-run with --rebuild-vectors to re-embed all summaries, or revert")
+        print(f"  the embed settings in {_CONFIG_FILENAME}.\n")
+        raise SystemExit(1)
+
+
+def write_embed_lock(root_dir: str) -> None:
+    """Write (or overwrite) the embed lock file with the current config."""
+    fp = _embed_fingerprint(get_config())
+    lock_path = os.path.join(root_dir, _LOCK_FILENAME)
+    lines = [
+        "# codebase-insights embed lock file (auto-generated — do not edit manually)",
+        "# This records the embedding model used to build the ChromaDB vector store.",
+        "# If the embed config in .codebase-insights.toml changes, re-run with",
+        "# --rebuild-vectors to regenerate the vectors with the new model.",
+        "",
+        "[embed]",
+        f'provider = "{fp["provider"]}"',
+        f'model    = "{fp["model"]}"',
+        f'base_url = "{fp["base_url"]}"',
+        "",
+    ]
+    with open(lock_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    print(f"[Config] Embed lock written to {_LOCK_FILENAME}")
