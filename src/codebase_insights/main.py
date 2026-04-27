@@ -96,6 +96,7 @@ def _bootstrap(args: argparse.Namespace, project_root: str):
         print("[Status] No currently supported languages detected.")
 
     if not _ensure_languages_have_servers(detected_languages):
+        cli_io.flush_pre_buffer_to_terminal()
         sys.exit(1)
 
     sem_indexer_factory = None

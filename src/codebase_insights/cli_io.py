@@ -124,6 +124,23 @@ def detach_sinks() -> None:
         _progress_sink = None
 
 
+def flush_pre_buffer_to_terminal() -> None:
+    """Drain the pre-buffer to the real terminal and disable further buffering.
+
+    Call this before any fatal sys.exit() that fires before the TUI has
+    mounted, so that error messages captured in the pre-buffer are not
+    silently discarded.
+    """
+    global _pre_buffer, _pre_buffering
+    with _lock:
+        buffered, _pre_buffer = _pre_buffer, []
+        _pre_buffering = False
+    for sec, line in buffered:
+        _real_stdout.write(f"[{sec}] {line}\n")
+    if buffered:
+        _real_stdout.flush()
+
+
 def set_no_tui(value: bool) -> None:
     """Force plain-stdout mode (used for --no-tui / scripted runs)."""
     global _no_tui

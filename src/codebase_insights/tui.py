@@ -457,7 +457,7 @@ class CodebaseInsightsTUI(App):
         lines: list[str] = []
         lines.append(
             f"[bold bright_white]Codebase-Insights[/]  "
-            f"[dim]v1.1.0[/]\n"
+            f"[dim]v1.2.2[/]\n"
         )
         for group_title, group_fields in _OVERVIEW_GROUPS:
             lines.append(f"[bold cyan]── {group_title} {'─' * max(0, 38 - len(group_title))}[/]")
