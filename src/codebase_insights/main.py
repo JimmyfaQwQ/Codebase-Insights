@@ -160,7 +160,12 @@ def _do_startup_work(args: argparse.Namespace, project_root: str,
         server_cmd = language_servers[language]
         client = LSP.LSPClient(language, server_cmd)
         _bm_lsp_s = time.perf_counter()
-        client.start_server()
+        try:
+            client.start_server()
+        except RuntimeError as e:
+            print(f"[LSP] Error: {e}")
+            print(f"[LSP] Skipping {language.value} — LSP features will be unavailable.")
+            continue
         _bm_lsp_started = time.perf_counter()
         client.initialize(project_root)
         _bm_lsp_inited = time.perf_counter()

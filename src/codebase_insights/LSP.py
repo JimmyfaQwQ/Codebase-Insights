@@ -1,7 +1,9 @@
+import errno
 import json
 import os
 import shutil
 import sys
+import time
 from typing import Dict, Optional, Set
 from urllib.parse import urlparse
 import threading
@@ -102,6 +104,22 @@ class LSPClient:
             shell=(sys.platform == "win32"),
         )
         threading.Thread(target=self._read_messages, daemon=True).start()
+        # Give the process a moment to either stabilise or crash immediately.
+        time.sleep(0.3)
+        rc = self.process.poll()
+        if rc is not None:
+            try:
+                stderr_out = self.process.stderr.read(4096).decode("utf-8", errors="replace").strip()
+            except Exception:
+                stderr_out = ""
+            cmd_str = " ".join(self.server_cmd)
+            detail = f"\n  stderr: {stderr_out}" if stderr_out else " (no stderr output)"
+            raise RuntimeError(
+                f"{self.language.value} LSP server '{cmd_str}' exited immediately "
+                f"(exit code {rc}).{detail}\n"
+                f"  Check that the server is correctly installed and compatible with "
+                f"the current Node.js version ({sys.version})."
+            )
 
     def shutdown_server(self):
         self._send_request("shutdown")
@@ -144,8 +162,20 @@ class LSPClient:
     def _send_raw(self, message: Dict):
         content = json.dumps(message).encode('utf-8')
         header = f"Content-Length: {len(content)}\r\n\r\n".encode('ascii')
-        self.process.stdin.write(header + content)
-        self.process.stdin.flush()
+        try:
+            self.process.stdin.write(header + content)
+            self.process.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            # On Windows, writing to a dead process stdin raises OSError(EINVAL)
+            # rather than BrokenPipeError.  Convert to a readable message.
+            if isinstance(exc, BrokenPipeError) or exc.errno == errno.EINVAL:
+                rc = self.process.poll()
+                raise RuntimeError(
+                    f"{self.language.value} LSP process died unexpectedly "
+                    f"(exit code: {rc}). The server may be incompatible with "
+                    f"the installed Node.js version."
+                ) from exc
+            raise
 
     # ── Request / Notification ────────────────────────────────────────────────
 
