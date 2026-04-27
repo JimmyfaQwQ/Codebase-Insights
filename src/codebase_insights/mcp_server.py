@@ -93,6 +93,56 @@ def _unwrap(result) -> dict:
     return {"result": _normalize_lsp_uris(result.result)}
 
 
+# ── Snippet helpers ──────────────────────────────────────────────────────────
+
+def _read_snippet(file_path: str, start_line: int, end_line: int | None = None) -> str | None:
+    """Return source lines *start_line* … *end_line* (0-based, inclusive).
+
+    Returns ``None`` when the file cannot be read.
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+        lo = max(0, start_line)
+        hi = min(len(lines), end_line + 1) if end_line is not None else lo + 1
+        return "".join(lines[lo:hi]).rstrip("\n")
+    except Exception:
+        return None
+
+
+def _enrich_location(loc: dict) -> dict:
+    """Attach a ``snippet`` key to a normalised Location or LocationLink dict."""
+    if not isinstance(loc, dict):
+        return loc
+    # Location: {"uri" (already normalised to canonical path), "range": {start, end}}
+    if "uri" in loc and "range" in loc:
+        rng = loc["range"]
+        s = rng.get("start", {}).get("line", 0)
+        e = rng.get("end", {}).get("line")
+        snippet = _read_snippet(loc["uri"], s, e)
+        if snippet is not None:
+            return {**loc, "snippet": snippet}
+    # LocationLink: {"targetUri", "targetRange", ...}
+    if "targetUri" in loc and "targetRange" in loc:
+        target_path = canonical_path(loc["targetUri"])
+        rng = loc["targetRange"]
+        s = rng.get("start", {}).get("line", 0)
+        e = rng.get("end", {}).get("line")
+        snippet = _read_snippet(target_path, s, e)
+        if snippet is not None:
+            return {**loc, "snippet": snippet}
+    return loc
+
+
+def _enrich_locations(result):
+    """Recursively enrich a Location / Location[] / LocationLink[] result with snippets."""
+    if isinstance(result, list):
+        return [_enrich_location(item) for item in result]
+    if isinstance(result, dict):
+        return _enrich_location(result)
+    return result
+
+
 # ── Tools ────────────────────────────────────────────────────────────────────
 
 @mcp.resource("configurations://current-root-uri")
@@ -139,70 +189,83 @@ def lsp_hover(file_uri: str, line: int, character: int) -> dict:
 
 
 @mcp.tool()
-def lsp_definition(file_uri: str, line: int, character: int) -> dict:
+def lsp_definition(file_uri: str, line: int, character: int, include_snippet: bool = True) -> dict:
     """Go to the definition of the symbol at the given position.
 
     Args:
         file_uri: File URI or bare filesystem path, e.g. "file:///E:/my-project/src/main.py" or "E:\\my-project\\src\\main.py".
         line: Zero-based line number.
         character: Zero-based character offset on the line.
+        include_snippet: When True (default), attach source lines at the definition location.
     """
     file_uri = _to_file_uri(file_uri)
     client, err = _get_client(file_uri)
     if err:
         return err
-    return _unwrap(client.definition(
+    response = _unwrap(client.definition(
         text_document={"uri": file_uri},
         position={"line": line, "character": character},
     ))
+    if include_snippet and "result" in response:
+        response["result"] = _enrich_locations(response["result"])
+    return response
 
 
 @mcp.tool()
-def lsp_declaration(file_uri: str, line: int, character: int) -> dict:
+def lsp_declaration(file_uri: str, line: int, character: int, include_snippet: bool = True) -> dict:
     """Go to the declaration of the symbol at the given position.
 
     Args:
         file_uri: File URI or bare filesystem path, e.g. "file:///E:/my-project/src/main.py" or "E:\\my-project\\src\\main.py".
         line: Zero-based line number.
         character: Zero-based character offset on the line.
+        include_snippet: When True (default), attach source lines at the declaration location.
     """
     file_uri = _to_file_uri(file_uri)
     client, err = _get_client(file_uri)
     if err:
         return err
-    return _unwrap(client.declaration(
+    response = _unwrap(client.declaration(
         text_document={"uri": file_uri},
         position={"line": line, "character": character},
     ))
+    if include_snippet and "result" in response:
+        response["result"] = _enrich_locations(response["result"])
+    return response
 
 
 @mcp.tool()
-def lsp_implementation(file_uri: str, line: int, character: int) -> dict:
+def lsp_implementation(file_uri: str, line: int, character: int, include_snippet: bool = True) -> dict:
     """Find implementations of the symbol at the given position.
 
     Args:
         file_uri: File URI or bare filesystem path, e.g. "file:///E:/my-project/src/main.py" or "E:\\my-project\\src\\main.py".
         line: Zero-based line number.
         character: Zero-based character offset on the line.
+        include_snippet: When True (default), attach source lines at each implementation location.
     """
     file_uri = _to_file_uri(file_uri)
     client, err = _get_client(file_uri)
     if err:
         return err
-    return _unwrap(client.implementation(
+    response = _unwrap(client.implementation(
         text_document={"uri": file_uri},
         position={"line": line, "character": character},
     ))
+    if include_snippet and "result" in response:
+        response["result"] = _enrich_locations(response["result"])
+    return response
 
 
 @mcp.tool()
-def lsp_references(file_uri: str, line: int, character: int) -> dict:
+def lsp_references(file_uri: str, line: int, character: int, include_snippet: bool = True) -> dict:
     """Find all references to the symbol at the given position.
 
     Args:
         file_uri: File URI or bare filesystem path, e.g. "file:///E:/my-project/src/main.py" or "E:\\my-project\\src\\main.py".
         line: Zero-based line number.
         character: Zero-based character offset on the line.
+        include_snippet: When True (default), attach the source line for each reference location.
     """
     file_uri = _to_file_uri(file_uri)
     client, err = _get_client(file_uri)
@@ -228,7 +291,19 @@ def lsp_references(file_uri: str, line: int, character: int) -> dict:
             }
         return {"error": result.error}
     refs = result.result or []
-    return {"result": _normalize_lsp_uris(refs), "count": len(refs)}
+    normalized = _normalize_lsp_uris(refs)
+    if include_snippet:
+        enriched = []
+        for loc in normalized:
+            if isinstance(loc, dict) and "uri" in loc and "range" in loc:
+                ref_line = loc["range"].get("start", {}).get("line")
+                if ref_line is not None:
+                    snippet = _read_snippet(loc["uri"], ref_line, ref_line)
+                    if snippet is not None:
+                        loc = {**loc, "snippet": snippet}
+            enriched.append(loc)
+        normalized = enriched
+    return {"result": normalized, "count": len(refs)}
 
 
 @mcp.tool()
