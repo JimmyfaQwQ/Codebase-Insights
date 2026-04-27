@@ -120,6 +120,7 @@ def _bootstrap(args: argparse.Namespace, project_root: str):
                   f"(chat={cfg['chat']['provider']}, embed={cfg['embed']['provider']})")
             return inst
     except SystemExit:
+        cli_io.flush_pre_buffer_to_terminal()
         raise
     except Exception as e:
         print(f"[Semantic] Could not initialise semantic indexer: {e}")
