@@ -107,6 +107,7 @@ def _bootstrap(args: argparse.Namespace, project_root: str):
             cfg = semantic_config.load_config(project_root, force_new=args.new_config)
         if not args.rebuild_vectors:
             semantic_config.check_embed_lock(project_root)
+        semantic_config.check_ollama_models()
         # Build llm/embeddings now (so OpenAI key errors surface pre-TUI),
         # but defer SemanticIndexer construction to the worker so its own
         # init logs land in the proper TUI panel.

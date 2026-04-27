@@ -149,6 +149,70 @@ def get_config() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Ollama model existence guard
+# ---------------------------------------------------------------------------
+
+def check_ollama_models() -> None:
+    """Verify that all Ollama-backed models are available on the Ollama server.
+
+    Queries ``GET <base_url>/api/tags`` for each Ollama provider section
+    (chat and/or embed) and raises ``SystemExit`` if a configured model is not
+    found among the installed models.  Skips the check gracefully if Ollama is
+    unreachable (network error / server not running) so that non-Ollama setups
+    are never blocked.
+    """
+    import urllib.request
+    import urllib.error
+    import json as _json
+
+    cfg = get_config()
+    checks: list[tuple[str, str, str]] = []  # (role, base_url, model)
+
+    for role, section in (("chat", cfg.get("chat", {})), ("embed", cfg.get("embed", {}))):
+        if section.get("provider", "ollama").strip().lower() == "ollama":
+            ollama_cfg = section.get("ollama", {})
+            base_url = ollama_cfg.get("base_url", "http://localhost:11434").rstrip("/")
+            model = ollama_cfg.get("model", "").strip()
+            if model:
+                checks.append((role, base_url, model))
+
+    if not checks:
+        return
+
+    # Deduplicate by (base_url) so we fetch the tag list at most once per server.
+    fetched: dict[str, list[str] | None] = {}  # base_url -> list of model names, or None on error
+
+    for role, base_url, model in checks:
+        if base_url not in fetched:
+            try:
+                with urllib.request.urlopen(f"{base_url}/api/tags", timeout=5) as resp:
+                    data = _json.loads(resp.read())
+                fetched[base_url] = [m["name"] for m in data.get("models", [])]
+            except Exception as exc:
+                print(f"[Config] Warning: could not reach Ollama at {base_url} ({exc}). "
+                      "Skipping model check.")
+                fetched[base_url] = None  # mark as unreachable; skip
+
+        available = fetched[base_url]
+        if available is None:
+            continue  # server unreachable — skip gracefully
+
+        # Ollama tag names may include a ":latest" suffix when the model was
+        # pulled without an explicit tag, so compare both the bare name and the
+        # name with ":latest" appended.
+        candidates = {model, f"{model}:latest"}
+        if not candidates.intersection(available):
+            print(f"\n[Config] ERROR: Ollama model '{model}' (used for {role}) is not installed.")
+            print(f"  Available models on {base_url}:")
+            for m in available:
+                print(f"    - {m}")
+            print(f"\n  Pull it with:  ollama pull {model}\n")
+            raise SystemExit(1)
+
+        print(f"[Config] Ollama {role} model '{model}' — OK")
+
+
+# ---------------------------------------------------------------------------
 # Factory: LLM (chat)
 # ---------------------------------------------------------------------------
 
