@@ -136,6 +136,10 @@ def canonical_path(path: str) -> str:
     # Normalise slashes to OS separator
     path = path.replace("/", os.sep).replace("\\", os.sep)
     path = os.path.normpath(path)
+    # Resolve relative paths to absolute so DB keys are always consistent
+    # regardless of whether the server was launched with a relative project root.
+    if not os.path.isabs(path):
+        path = os.path.abspath(path)
     # On Windows: normalise drive letter to uppercase (e: -> E:)
     if os.name == "nt" and len(path) >= 2 and path[1] == ":":
         path = path[0].upper() + path[1:]
