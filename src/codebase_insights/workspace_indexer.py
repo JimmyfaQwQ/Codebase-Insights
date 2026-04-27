@@ -403,7 +403,13 @@ class WorkspaceIndexer:
         con.execute("DELETE FROM file_hashes WHERE file_path=?", (file_path,))
         # Also remove the file summary so the project summary hash changes and
         # triggers a project summary update when the file disappears.
-        con.execute("DELETE FROM file_summaries WHERE file_path=?", (file_path,))
+        # Guard against the table not yet existing (created by semantic_indexer
+        # which may not have initialised yet during the initial pass).
+        table_exists = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='file_summaries'"
+        ).fetchone()
+        if table_exists:
+            con.execute("DELETE FROM file_summaries WHERE file_path=?", (file_path,))
         con.commit()
 
     # ------------------------------------------------------------------
