@@ -27,8 +27,7 @@ _DEFAULT_CONFIG: dict = {
             "base_url": "http://localhost:11434",
             "model": "qwen2.5",
         },
-        "openai": {
-            "api_key": "",
+        "openai-compatible": {
             "base_url": "",
             "model": "gpt-4o-mini",
         },
@@ -39,8 +38,7 @@ _DEFAULT_CONFIG: dict = {
             "base_url": "http://localhost:11434",
             "model": "bge-m3",
         },
-        "openai": {
-            "api_key": "",
+        "openai-compatible": {
             "base_url": "",
             "model": "text-embedding-3-small",
         },
@@ -158,25 +156,23 @@ def create_llm() -> BaseChatModel:
     cfg = get_config()
     provider = cfg["chat"]["provider"].strip().lower()
 
-    if provider == "openai":
+    if provider in ("openai", "openai-compatible"):
         from langchain_openai import ChatOpenAI
 
-        c = cfg["chat"]["openai"]
-        # Prefer environment variable over config-file value so that API keys
-        # are never required to be stored in plain text on disk.
+        # Support both old "openai" and new "openai-compatible" section names.
+        c = cfg["chat"].get("openai-compatible") or cfg["chat"].get("openai", {})
         api_key = (
             os.environ.get("CODEBASE_INSIGHTS_CHAT_API_KEY")
             or os.environ.get("OPENAI_API_KEY")
-            or c.get("api_key", "")
         )
         if not api_key:
             raise RuntimeError(
-                f"OpenAI API key not found. Set the CODEBASE_INSIGHTS_CHAT_API_KEY "
-                f"or OPENAI_API_KEY environment variable, or add chat.openai.api_key "
-                f"to {_CONFIG_FILENAME}."
+                "OpenAI-compatible API key not found. "
+                "Set the CODEBASE_INSIGHTS_CHAT_API_KEY or OPENAI_API_KEY "
+                "environment variable."
             )
         masked = api_key[:6] + "..." + api_key[-4:] if len(api_key) > 10 else "***"
-        print(f"[Config] Using OpenAI chat model '{c.get('model', 'gpt-4o-mini')}' (key: {masked})")
+        print(f"[Config] Using OpenAI-compatible chat model '{c.get('model', 'gpt-4o-mini')}' (key: {masked})")
         return ChatOpenAI(
             model=c.get("model", "gpt-4o-mini"),
             api_key=api_key,
@@ -203,24 +199,23 @@ def create_embeddings() -> Embeddings:
     cfg = get_config()
     provider = cfg["embed"]["provider"].strip().lower()
 
-    if provider == "openai":
+    if provider in ("openai", "openai-compatible"):
         from langchain_openai import OpenAIEmbeddings
 
-        c = cfg["embed"]["openai"]
-        # Prefer environment variable over config-file value.
+        # Support both old "openai" and new "openai-compatible" section names.
+        c = cfg["embed"].get("openai-compatible") or cfg["embed"].get("openai", {})
         api_key = (
             os.environ.get("CODEBASE_INSIGHTS_EMBED_API_KEY")
             or os.environ.get("OPENAI_API_KEY")
-            or c.get("api_key", "")
         )
         if not api_key:
             raise RuntimeError(
-                f"OpenAI API key not found. Set the CODEBASE_INSIGHTS_EMBED_API_KEY "
-                f"or OPENAI_API_KEY environment variable, or add embed.openai.api_key "
-                f"to {_CONFIG_FILENAME}."
+                "OpenAI-compatible API key not found. "
+                "Set the CODEBASE_INSIGHTS_EMBED_API_KEY or OPENAI_API_KEY "
+                "environment variable."
             )
         masked = api_key[:6] + "..." + api_key[-4:] if len(api_key) > 10 else "***"
-        print(f"[Config] Using OpenAI embeddings model '{c.get('model', 'text-embedding-3-small')}' (key: {masked})")
+        print(f"[Config] Using OpenAI-compatible embeddings model '{c.get('model', 'text-embedding-3-small')}' (key: {masked})")
         return OpenAIEmbeddings(
             model=c.get("model", "text-embedding-3-small"),
             api_key=api_key,
@@ -362,16 +357,18 @@ def _prompt_choice(msg: str, choices: list[str], default: str) -> str:
 def _wizard_provider_section(role: str, default_provider: str, defaults: dict) -> dict:
     """Wizard sub-flow for one provider section (chat or embed).
 
-    Returns a dict with keys: provider, ollama, openai.
+    Returns a dict with keys: provider, ollama, openai-compatible.
     """
+    # Normalise legacy "openai" default so the choice list stays consistent.
+    normalised_default = "openai-compatible" if default_provider == "openai" else default_provider
     provider = _prompt_choice(
         f"Provider for {role}?",
-        ["ollama", "openai"],
-        default=default_provider,
+        ["ollama", "openai-compatible"],
+        default=normalised_default,
     )
 
     ollama = dict(defaults["ollama"])
-    openai = dict(defaults["openai"])
+    compat = dict(defaults.get("openai-compatible") or defaults.get("openai") or {})
 
     if provider == "ollama":
         print(f"\n  -- {role.capitalize()} · Ollama --")
@@ -379,18 +376,29 @@ def _wizard_provider_section(role: str, default_provider: str, defaults: dict) -
         ollama["model"]    = _prompt("Model", ollama["model"])
     else:
         print(f"\n  -- {role.capitalize()} · OpenAI-compatible --")
-        print("  Tip: leave the API key blank and set OPENAI_API_KEY (or")
-        print(f"       CODEBASE_INSIGHTS_{role.upper()}_API_KEY - Higher priority) in your environment instead.")
-        raw_key = _prompt("API key (or leave blank to use env var)", "")
-        openai["api_key"]  = raw_key  # may be blank; env var takes priority at runtime
-        openai["base_url"] = _prompt("Base URL (blank = official OpenAI)", openai["base_url"])
-        openai["model"]    = _prompt("Model", openai["model"])
+        env_specific = f"CODEBASE_INSIGHTS_{role.upper()}_API_KEY"
+        env_generic  = "OPENAI_API_KEY"
+        print(f"  API key must be set as an environment variable (not stored in config).")
+        print(f"  Accepted variables (higher priority first):")
+        print(f"    1) {env_specific}")
+        print(f"    2) {env_generic}")
+        found_key = os.environ.get(env_specific) or os.environ.get(env_generic)
+        if found_key:
+            masked = found_key[:6] + "..." + found_key[-4:] if len(found_key) > 10 else "***"
+            print(f"  [OK] API key detected in environment (masked: {masked})")
+        else:
+            print(f"  [WARNING] Neither {env_specific} nor {env_generic} is currently set.")
+            print(f"  Please export one of those variables before starting Codebase Insights.")
+        compat["base_url"] = _prompt("Base URL (blank = official OpenAI endpoint)", compat.get("base_url", ""))
+        compat["model"]    = _prompt("Model", compat.get("model", "gpt-4o-mini"))
 
-    return {"provider": provider, "ollama": ollama, "openai": openai}
+    return {"provider": provider, "ollama": ollama, "openai-compatible": compat}
 
 
 def _write_provider_block(lines: list[str], section: str, cfg: dict):
     """Append a [section] TOML block to *lines*."""
+    compat = cfg.get("openai-compatible") or cfg.get("openai") or {}
+    env_var = f"CODEBASE_INSIGHTS_{section.upper()}_API_KEY"
     lines += [
         f"[{section}]",
         f'provider = "{cfg["provider"]}"',
@@ -399,10 +407,11 @@ def _write_provider_block(lines: list[str], section: str, cfg: dict):
         f'base_url = "{cfg["ollama"]["base_url"]}"',
         f'model    = "{cfg["ollama"]["model"]}"',
         "",
-        f"[{section}.openai]",
-        f'api_key  = "{cfg["openai"]["api_key"]}"',
-        f'base_url = "{cfg["openai"]["base_url"]}"',
-        f'model    = "{cfg["openai"]["model"]}"',
+        f"[{section}.openai-compatible]",
+        f"# API key is read from the {env_var} or OPENAI_API_KEY environment variable.",
+        f"# Do not store API keys in this file.",
+        f'base_url = "{compat.get("base_url", "")}"',
+        f'model    = "{compat.get("model", "gpt-4o-mini")}"',
         "",
     ]
 
@@ -466,10 +475,10 @@ def _embed_fingerprint(cfg: dict) -> dict:
     """Extract the embed-relevant fields that affect the ChromaDB vectors."""
     embed = cfg.get("embed", {})
     provider = embed.get("provider", "ollama").strip().lower()
-    if provider == "openai":
-        c = embed.get("openai", {})
+    if provider in ("openai", "openai-compatible"):
+        c = embed.get("openai-compatible") or embed.get("openai") or {}
         return {
-            "provider": "openai",
+            "provider": "openai-compatible",
             "base_url": c.get("base_url", "").strip(),
             "model":    c.get("model", "text-embedding-3-small").strip(),
         }

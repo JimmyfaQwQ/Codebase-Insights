@@ -3,26 +3,28 @@
 # you can mix providers, e.g. OpenAI for chat + Ollama for embeddings.
 
 [chat]
-provider = "ollama"              # "ollama" or "openai"
+provider = "ollama"              # "ollama" or "openai-compatible"
 
 [chat.ollama]
 base_url = "http://localhost:11434"
 model    = "qwen2.5"
 
-[chat.openai]
-api_key  = ""                    # Required when chat.provider = "openai"
+[chat.openai-compatible]
+# API key is read from the CODEBASE_INSIGHTS_CHAT_API_KEY or OPENAI_API_KEY environment variable.
+# Do not store API keys in this file.
 base_url = ""                    # Leave blank for official OpenAI; set for compatible APIs (DeepSeek, Azure, etc.)
 model    = "gpt-4o-mini"
 
 [embed]
-provider = "ollama"              # "ollama" or "openai"
+provider = "ollama"              # "ollama" or "openai-compatible"
 
 [embed.ollama]
 base_url = "http://localhost:11434"
 model    = "nomic-embed-text"
 
-[embed.openai]
-api_key  = ""                    # Required when embed.provider = "openai"
+[embed.openai-compatible]
+# API key is read from the CODEBASE_INSIGHTS_EMBED_API_KEY or OPENAI_API_KEY environment variable.
+# Do not store API keys in this file.
 base_url = ""
 model    = "text-embedding-3-small"
 

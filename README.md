@@ -143,7 +143,8 @@ codebase-insights /path/to/project
 Quick start with an OpenAI-compatible provider:
 
 ```bash
-# Set OPENAI_API_KEY first
+# Export your API key first — it is never stored in the config file
+export OPENAI_API_KEY=sk-...
 codebase-insights /path/to/project --new-config
 ```
 
@@ -222,13 +223,15 @@ Summary refresh controls:
 
 Set any of these to `0` to disable that trigger. `refresh_file_summary()` and `refresh_project_summary()` always force regeneration immediately.
 
-API key precedence for OpenAI-compatible providers:
+API keys for OpenAI-compatible providers are read **exclusively from environment variables** and are never stored in the config file:
 
-- `CODEBASE_INSIGHTS_CHAT_API_KEY`
-- `CODEBASE_INSIGHTS_EMBED_API_KEY`
-- `OPENAI_API_KEY`
+| Variable | Used for |
+|---|---|
+| `CODEBASE_INSIGHTS_CHAT_API_KEY` | Chat / summarisation (highest priority) |
+| `CODEBASE_INSIGHTS_EMBED_API_KEY` | Embeddings (highest priority) |
+| `OPENAI_API_KEY` | Fallback for both chat and embeddings |
 
-Environment variables take precedence over keys stored in config.
+The setup wizard validates that the relevant variable is already exported and warns if it is not found.
 
 ## CLI flags
 
