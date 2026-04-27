@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 import traceback
+from contextlib import contextmanager
 from typing import Callable, Iterable, Optional
 
 # ----------------------------------------------------------------------------
@@ -139,6 +140,32 @@ def flush_pre_buffer_to_terminal() -> None:
         _real_stdout.write(f"[{sec}] {line}\n")
     if buffered:
         _real_stdout.flush()
+
+
+@contextmanager
+def bypass_print_redirect():
+    """Temporarily restore raw stdout/print so interactive wizard I/O is visible.
+
+    Flushes the pre-buffer first so no earlier messages are lost.  After the
+    block the redirect is reinstated and pre-buffering resumes.  No-op when no
+    redirect is installed (e.g. --no-tui mode).
+    """
+    global _pre_buffering
+    flush_pre_buffer_to_terminal()
+    if not _print_redirected:
+        yield
+        return
+    builtins.print = _real_print
+    sys.stdout = _real_stdout
+    sys.stderr = _real_stderr
+    try:
+        yield
+    finally:
+        builtins.print = _routing_print
+        sys.stdout = _LineSplitter("status")
+        sys.stderr = _StderrSplitter("status")
+        with _lock:
+            _pre_buffering = True
 
 
 def set_no_tui(value: bool) -> None:

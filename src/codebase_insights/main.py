@@ -101,7 +101,10 @@ def _bootstrap(args: argparse.Namespace, project_root: str):
 
     sem_indexer_factory = None
     try:
-        cfg = semantic_config.load_config(project_root, force_new=args.new_config)
+        # The config wizard uses input(): flush the pre-buffer and briefly
+        # restore raw stdout so its prompts are visible on the terminal.
+        with cli_io.bypass_print_redirect():
+            cfg = semantic_config.load_config(project_root, force_new=args.new_config)
         if not args.rebuild_vectors:
             semantic_config.check_embed_lock(project_root)
         # Build llm/embeddings now (so OpenAI key errors surface pre-TUI),
